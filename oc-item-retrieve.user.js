@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.1
+// @version      1.3.2
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -246,9 +246,6 @@
               }, 0);
             });
           }
-          // Diagnostic: log whether fill worked (remove once auto-fill is confirmed working)
-          console.log("🔧 OC fill: item", itemId, "| input found:", !!visibleInput, "| value:", visibleInput ? '"' + visibleInput.value + '"' : "n/a");
-
           // Create hidden backing field now (format: "Name [ID]").
           // jQuery UI normally creates this on user selection; we create it early.
           let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
@@ -323,7 +320,11 @@
   function debouncedScan(activeNeeds, itemNeedsMap) {
     if (scanTimeout) clearTimeout(scanTimeout);
     scanTimeout = setTimeout(() => {
-      clearMarkers();
+      // Do NOT call clearMarkers() here — removing our annotation spans triggers
+      // another MutationObserver fire, creating an infinite scan loop that also
+      // causes Torn's JS to reinitialize the loan form and clear the autofill.
+      // Already-marked rows are skipped via MARKER_ATTR; only new AJAX-added
+      // rows need processing. clearMarkers is called on hash changes instead.
       scanArmoryRows(activeNeeds, itemNeedsMap);
     }, 500);
   }
