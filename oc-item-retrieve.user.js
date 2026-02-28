@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.0.0
-// @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory
+// @version      1.1.0
+// @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
 // @match        https://www.torn.com/factions.php*
@@ -111,6 +111,7 @@
 
   async function fetchActiveCrimes(apiKey) {
     const activeNeeds = new Map(); // userID -> Set<itemID>
+    const rawItemNeeds = new Map(); // itemID -> Set<userID> (only for items not yet held)
 
     for (const cat of ["recruiting", "planning"]) {
       let offset = 0;
@@ -125,10 +126,19 @@
             const itemReq = slot.item_requirement;
             const user = slot.user;
             if (itemReq && itemReq.id && user && user.id) {
+              // Track who needs what (for retrieve highlighting)
               if (!activeNeeds.has(user.id)) {
                 activeNeeds.set(user.id, new Set());
               }
               activeNeeds.get(user.id).add(itemReq.id);
+
+              // Track what items are needed but not yet held (for loan highlighting)
+              if (itemReq.is_available === false) {
+                if (!rawItemNeeds.has(itemReq.id)) {
+                  rawItemNeeds.set(itemReq.id, new Set());
+                }
+                rawItemNeeds.get(itemReq.id).add(user.id);
+              }
             }
           }
         }
@@ -143,27 +153,100 @@
     console.log(
       `📋 OC Retrieve: ${activeNeeds.size} members with active OC item needs`
     );
-    return activeNeeds;
+    return { activeNeeds, rawItemNeeds };
   }
 
-  function scanArmoryRows(activeNeeds) {
+  async function fetchMemberNames(apiKey) {
+    const memberNames = new Map(); // userID -> name
+    let offset = 0;
+    while (true) {
+      const url = `https://api.torn.com/v2/faction/members?key=${apiKey}&limit=100&offset=${offset}`;
+      const data = await tornApiGet(url);
+      const members = data.members || [];
+      if (members.length === 0) break;
+
+      for (const member of members) {
+        if (member.id && member.name) {
+          memberNames.set(member.id, member.name);
+        }
+      }
+
+      offset += members.length;
+      const total = data._metadata?.total || 0;
+      if (total > 0 && offset >= total) break;
+      if (members.length < 100) break;
+    }
+
+    console.log(`👥 OC Retrieve: ${memberNames.size} faction members loaded`);
+    return memberNames;
+  }
+
+  function buildItemNeedsMap(rawItemNeeds, memberNames) {
+    const map = new Map();
+    for (const [itemId, userIds] of rawItemNeeds) {
+      map.set(itemId, [...userIds].map(id => ({
+        id,
+        name: memberNames.get(id) || `User ${id}`,
+      })));
+    }
+    return map;
+  }
+
+  function scanArmoryRows(activeNeeds, itemNeedsMap) {
     const rows = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
 
     let highlighted = 0;
+    let loanSuggested = 0;
     let checked = 0;
 
     for (const row of rows) {
       if (row.hasAttribute(MARKER_ATTR)) continue;
       row.setAttribute(MARKER_ATTR, "1");
 
-      const userLink = row.querySelector("div.loaned a[href*='profiles.php']");
-      if (!userLink) continue;
-
       const imgWrap = row.querySelector("div.img-wrap[data-itemid]");
       if (!imgWrap) continue;
       const itemId = parseInt(imgWrap.dataset.itemid, 10);
       if (!OC_ITEMS.has(itemId)) continue;
 
+      const userLink = row.querySelector("div.loaned a[href*='profiles.php']");
+
+      if (!userLink) {
+        // Available (not loaned out) — check if anyone needs this item
+        const loanBtn = row.querySelector("a.loan.active[data-role='loan']");
+        if (loanBtn && itemNeedsMap && itemNeedsMap.has(itemId)) {
+          const needers = itemNeedsMap.get(itemId); // Array<{id, name}>
+          const first = needers[0];
+
+          // Highlight the loan button
+          loanBtn.classList.add("oc-retrieve-ready");
+          loanSuggested++;
+
+          // Pre-fill the inline form (form is already in the DOM, not a dialog)
+          const visibleInput = row.querySelector("input.ac-search[name='user']");
+          const hiddenInput = row.querySelector("input[type='hidden'][name='user']");
+          if (visibleInput) {
+            visibleInput.value = first.name;
+            visibleInput.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          if (hiddenInput) {
+            hiddenInput.value = `${first.name} [${first.id}]`;
+          } else {
+            // Hidden backing field doesn't exist yet — create it
+            const h = document.createElement("input");
+            h.type = "hidden";
+            h.name = "user";
+            h.value = `${first.name} [${first.id}]`;
+            visibleInput?.insertAdjacentElement("afterend", h);
+          }
+
+          console.log(
+            `💚 OC Retrieve: ${OC_ITEMS.get(itemId)} available — needed by ${needers.map(n => n.name).join(", ")}`
+          );
+        }
+        continue;
+      }
+
+      // Loaned out — check if safe to retrieve
       const xidMatch = userLink.href.match(/XID=(\d+)/);
       if (!xidMatch) continue;
       const userId = parseInt(xidMatch[1], 10);
@@ -185,9 +268,9 @@
       }
     }
 
-    if (checked > 0) {
+    if (checked > 0 || loanSuggested > 0) {
       console.log(
-        `🔍 OC Retrieve: checked ${checked} loaned OC items, highlighted ${highlighted}`
+        `🔍 OC Retrieve: checked ${checked} loaned OC items, highlighted ${highlighted} for retrieve, ${loanSuggested} loan suggestions`
       );
     }
   }
@@ -204,11 +287,11 @@
   }
 
   let scanTimeout = null;
-  function debouncedScan(activeNeeds) {
+  function debouncedScan(activeNeeds, itemNeedsMap) {
     if (scanTimeout) clearTimeout(scanTimeout);
     scanTimeout = setTimeout(() => {
       clearMarkers();
-      scanArmoryRows(activeNeeds);
+      scanArmoryRows(activeNeeds, itemNeedsMap);
     }, 500);
   }
 
@@ -233,26 +316,31 @@
       return;
     }
 
-    let activeNeeds;
+    let activeNeeds, rawItemNeeds, memberNames;
     try {
-      activeNeeds = await fetchActiveCrimes(apiKey);
+      [{ activeNeeds, rawItemNeeds }, memberNames] = await Promise.all([
+        fetchActiveCrimes(apiKey),
+        fetchMemberNames(apiKey),
+      ]);
     } catch (err) {
-      console.error("❌ OC Retrieve: failed to fetch planning crimes:", err);
+      console.error("❌ OC Retrieve: failed to fetch data:", err);
       return;
     }
 
+    const itemNeedsMap = buildItemNeedsMap(rawItemNeeds, memberNames);
+
     // Initial scan
-    scanArmoryRows(activeNeeds);
+    scanArmoryRows(activeNeeds, itemNeedsMap);
 
     // Watch for DOM changes (pagination, tab switches, AJAX reloads)
-    const observer = new MutationObserver(() => debouncedScan(activeNeeds));
+    const observer = new MutationObserver(() => debouncedScan(activeNeeds, itemNeedsMap));
     observer.observe(document.body, { childList: true, subtree: true });
 
     // Also re-scan on hash changes (sub-tab navigation)
     window.addEventListener("hashchange", () => {
       if (window.location.hash.includes("armoury")) {
         clearMarkers();
-        debouncedScan(activeNeeds);
+        debouncedScan(activeNeeds, itemNeedsMap);
       }
     });
 
@@ -264,6 +352,8 @@
     OC_ITEMS,
     getApiKey,
     fetchActiveCrimes,
+    fetchMemberNames,
+    buildItemNeedsMap,
     clearMarkers,
     rescan: () => main(),
   };
