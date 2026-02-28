@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.1.0
+// @version      1.2.0
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -67,6 +67,12 @@
         color: #4caf50 !important;
         padding: 1px 4px !important;
         text-shadow: 0 0 4px rgba(76, 175, 80, 0.4) !important;
+      }
+      .oc-loan-target {
+        color: #4caf50;
+        font-size: 0.85em;
+        margin-left: 4px;
+        font-style: italic;
       }
     `;
     document.head.appendChild(style);
@@ -221,23 +227,34 @@
           loanBtn.classList.add("oc-retrieve-ready");
           loanSuggested++;
 
-          // Pre-fill the inline form (form is already in the DOM, not a dialog)
-          const visibleInput = row.querySelector("input.ac-search[name='user']");
-          const hiddenInput = row.querySelector("input[type='hidden'][name='user']");
-          if (visibleInput) {
-            visibleInput.value = first.name;
-            visibleInput.dispatchEvent(new Event("input", { bubbles: true }));
-          }
-          if (hiddenInput) {
-            hiddenInput.value = `${first.name} [${first.id}]`;
-          } else {
-            // Hidden backing field doesn't exist yet — create it
-            const h = document.createElement("input");
-            h.type = "hidden";
-            h.name = "user";
-            h.value = `${first.name} [${first.id}]`;
-            visibleInput?.insertAdjacentElement("afterend", h);
-          }
+          // Always-visible annotation showing who needs this item
+          const tag = document.createElement("span");
+          tag.className = "oc-loan-target";
+          tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
+          loanBtn.insertAdjacentElement("afterend", tag);
+
+          // Best-effort autocomplete fill: intercept click, then watch for
+          // the inputs to appear dynamically and fill them immediately.
+          loanBtn.addEventListener("click", function() {
+            const observer = new MutationObserver(function() {
+              const visibleInput = row.querySelector("input.ac-search[name='user']");
+              if (visibleInput && visibleInput.value === "") {
+                observer.disconnect();
+                visibleInput.value = first.name;
+                let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
+                if (!hiddenInput) {
+                  hiddenInput = document.createElement("input");
+                  hiddenInput.type = "hidden";
+                  hiddenInput.name = "user";
+                  visibleInput.insertAdjacentElement("afterend", hiddenInput);
+                }
+                hiddenInput.value = first.name + " [" + first.id + "]";
+                console.log("💚 OC Retrieve: pre-filled loan form for " + first.name);
+              }
+            });
+            observer.observe(row, { childList: true, subtree: true });
+            setTimeout(function() { observer.disconnect(); }, 3000);
+          }, { once: true });
 
           console.log(
             `💚 OC Retrieve: ${OC_ITEMS.get(itemId)} available — needed by ${needers.map(n => n.name).join(", ")}`
@@ -283,6 +300,10 @@
     const glowing = document.querySelectorAll(".oc-retrieve-ready");
     for (const el of glowing) {
       el.classList.remove("oc-retrieve-ready");
+    }
+    const tags = document.querySelectorAll(".oc-loan-target");
+    for (const el of tags) {
+      el.remove();
     }
   }
 
