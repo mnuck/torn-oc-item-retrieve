@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.2.0
+// @version      1.3.0
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -233,32 +233,44 @@
           tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
           loanBtn.insertAdjacentElement("afterend", tag);
 
-          // Best-effort autocomplete fill: intercept click, then watch for
-          // the inputs to appear dynamically and fill them immediately.
+          // Fix 2: Auto-fill at scan time — inputs are already in DOM (display: inline-block).
+          // Do NOT dispatch events — jQuery UI autocomplete resets value on any input event.
+          const visibleInput = row.querySelector("input.ac-search[name='user']");
+          if (visibleInput) {
+            visibleInput.value = first.name;
+            // Re-apply if autocomplete widget clears on focus
+            visibleInput.addEventListener("focusin", function() {
+              setTimeout(function() {
+                if (visibleInput.value === "") visibleInput.value = first.name;
+              }, 0);
+            });
+          }
+
+          // Create hidden backing field now (format: "Name [ID]").
+          // jQuery UI normally creates this on user selection; we create it early.
+          let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
+          if (!hiddenInput) {
+            hiddenInput = document.createElement("input");
+            hiddenInput.type = "hidden";
+            hiddenInput.name = "user";
+            if (visibleInput) visibleInput.insertAdjacentElement("afterend", hiddenInput);
+          }
+          hiddenInput.value = first.name + " [" + first.id + "]";
+
+          // Fix 3: Post-loan row cleanup — observe row for loan completing.
           loanBtn.addEventListener("click", function() {
-            const observer = new MutationObserver(function() {
-              const visibleInput = row.querySelector("input.ac-search[name='user']");
-              if (visibleInput && visibleInput.value === "") {
-                observer.disconnect();
-                visibleInput.value = first.name;
-                let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
-                if (!hiddenInput) {
-                  hiddenInput = document.createElement("input");
-                  hiddenInput.type = "hidden";
-                  hiddenInput.name = "user";
-                  visibleInput.insertAdjacentElement("afterend", hiddenInput);
-                }
-                hiddenInput.value = first.name + " [" + first.id + "]";
-                console.log("💚 OC Retrieve: pre-filled loan form for " + first.name);
+            const cleanupObserver = new MutationObserver(function() {
+              if (row.querySelector("div.loaned a[href*='profiles.php']")) {
+                cleanupObserver.disconnect();
+                row.querySelector(".oc-retrieve-ready")?.classList.remove("oc-retrieve-ready");
+                row.querySelector(".oc-loan-target")?.remove();
+                row.removeAttribute(MARKER_ATTR);
+                console.log("💚 OC Retrieve: loan complete, row cleaned up");
               }
             });
-            observer.observe(row, { childList: true, subtree: true });
-            setTimeout(function() { observer.disconnect(); }, 3000);
+            cleanupObserver.observe(row, { childList: true, subtree: true, attributes: true });
+            setTimeout(function() { cleanupObserver.disconnect(); }, 30000);
           }, { once: true });
-
-          console.log(
-            `💚 OC Retrieve: ${OC_ITEMS.get(itemId)} available — needed by ${needers.map(n => n.name).join(", ")}`
-          );
         }
         continue;
       }
@@ -278,9 +290,6 @@
         if (retrieveLink) {
           retrieveLink.classList.add("oc-retrieve-ready");
           highlighted++;
-          console.log(
-            `✅ OC Retrieve: ${OC_ITEMS.get(itemId)} held by user ${userId} — safe to retrieve`
-          );
         }
       }
     }
