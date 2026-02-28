@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.3
+// @version      1.3.4
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -240,12 +240,20 @@
           const visibleInput = row.querySelector("input.ac-search[name='user']");
           if (visibleInput) {
             visibleInput.value = first.name;
+            const dbg = (label) => console.log("🔧 fill[" + itemId + "] " + label + ":", '"' + visibleInput.value + '"');
+            dbg("set");
+            setTimeout(function() { dbg("0ms"); }, 0);
+            setTimeout(function() { dbg("100ms"); }, 100);
+            setTimeout(function() { dbg("500ms"); }, 500);
+            setTimeout(function() { dbg("1000ms"); }, 1000);
             // Re-apply if autocomplete widget clears on focus
             visibleInput.addEventListener("focusin", function() {
               setTimeout(function() {
                 if (visibleInput.value === "") visibleInput.value = first.name;
               }, 0);
             });
+          } else {
+            console.log("🔧 fill[" + itemId + "]: no input found");
           }
 
           // Post-loan cleanup: Torn AJAX does not update div.loaned in the DOM,
