@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.5
+// @version      1.3.6
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -245,26 +245,25 @@
             console.log("💚 OC Retrieve: loan clicked, row cleaned up");
 
             const tryFill = function(label) {
-              const inp = row.querySelector("input.ac-search[name='user']");
-              if (!inp) { console.log("🔧 fill[" + label + "]: no input in row"); return; }
-              console.log("🔧 fill[" + label + "]: display=" + window.getComputedStyle(inp).display + " value=\"" + inp.value + "\"");
-              if (inp.value === "") {
-                inp.value = first.name;
-                console.log("🔧 fill[" + label + "]: set to \"" + first.name + "\"");
-              }
-              // Create hidden backing field (format: "Name [ID]") for form submission
-              let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
-              if (!hiddenInput) {
-                hiddenInput = document.createElement("input");
-                hiddenInput.type = "hidden";
-                hiddenInput.name = "user";
-                inp.insertAdjacentElement("afterend", hiddenInput);
-              }
-              hiddenInput.value = first.name + " [" + first.id + "]";
+              // Count ALL matching inputs on the page, not just in the row
+              const allInps = document.querySelectorAll("input.ac-search[name='user']");
+              console.log("🔧 fill[" + label + "]: " + allInps.length + " total inputs on page");
+              allInps.forEach(function(inp, i) {
+                const cs = window.getComputedStyle(inp);
+                const r = inp.getBoundingClientRect();
+                const inRow = row.contains(inp);
+                console.log("🔧   [" + i + "] inRow=" + inRow + " display=" + cs.display + " visibility=" + cs.visibility + " value=\"" + inp.value + "\" rect={top:" + Math.round(r.top) + ",left:" + Math.round(r.left) + ",w:" + Math.round(r.width) + ",h:" + Math.round(r.height) + "}");
+                // Paint it so the user can find it visually
+                inp.style.outline = "3px solid red";
+                inp.style.backgroundColor = "yellow";
+                if (inp.value === "") {
+                  inp.value = first.name;
+                  console.log("🔧   [" + i + "] set to \"" + first.name + "\"");
+                }
+              });
             };
 
             setTimeout(function() { tryFill("0ms"); }, 0);
-            setTimeout(function() { tryFill("100ms"); }, 100);
             setTimeout(function() { tryFill("300ms"); }, 300);
             setTimeout(function() { tryFill("600ms"); }, 600);
           }, { once: true });
