@@ -594,9 +594,9 @@
         const loanBtn     = row.querySelector("a.loan.active[data-role='loan']");
         const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
         const flags = [
-          row.dataset.ocLoanSubmitted               ? "LOAN_SUBMITTED" : "",
-          loanBtn?.classList.contains("oc-retrieve-ready")     ? "LOAN_GLOW"      : "",
-          retrieveLink?.classList.contains("oc-retrieve-ready") ? "RETRIEVE_GLOW"  : "",
+          row.dataset.ocLoanSubmitted ? "LOAN_SUBMITTED" : "",
+          loanBtn?.classList.contains("oc-retrieve-ready") ? "LOAN_GLOW" : "",
+          retrieveLink?.classList.contains("oc-retrieve-ready") ? "RETRIEVE_GLOW" : "",
         ].filter(Boolean).join(" ");
         console.log(`[${i}]`, OC_ITEMS.get(itemId) || `id=${itemId}`, userLink ? `loaned→${uid}` : "available", flags || "(no flags)");
       });
