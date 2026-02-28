@@ -109,33 +109,35 @@
     });
   }
 
-  async function fetchPlanningCrimes(apiKey) {
+  async function fetchActiveCrimes(apiKey) {
     const activeNeeds = new Map(); // userID -> Set<itemID>
-    let offset = 0;
 
-    while (true) {
-      const url = `https://api.torn.com/v2/faction/crimes?key=${apiKey}&cat=planning&limit=100&offset=${offset}`;
-      const data = await tornApiGet(url);
-      const crimes = data.crimes || [];
-      if (crimes.length === 0) break;
+    for (const cat of ["recruiting", "planning"]) {
+      let offset = 0;
+      while (true) {
+        const url = `https://api.torn.com/v2/faction/crimes?key=${apiKey}&cat=${cat}&limit=100&offset=${offset}`;
+        const data = await tornApiGet(url);
+        const crimes = data.crimes || [];
+        if (crimes.length === 0) break;
 
-      for (const crime of crimes) {
-        for (const slot of crime.slots || []) {
-          const itemReq = slot.item_requirement;
-          const user = slot.user;
-          if (itemReq && itemReq.id && user && user.id) {
-            if (!activeNeeds.has(user.id)) {
-              activeNeeds.set(user.id, new Set());
+        for (const crime of crimes) {
+          for (const slot of crime.slots || []) {
+            const itemReq = slot.item_requirement;
+            const user = slot.user;
+            if (itemReq && itemReq.id && user && user.id) {
+              if (!activeNeeds.has(user.id)) {
+                activeNeeds.set(user.id, new Set());
+              }
+              activeNeeds.get(user.id).add(itemReq.id);
             }
-            activeNeeds.get(user.id).add(itemReq.id);
           }
         }
-      }
 
-      offset += crimes.length;
-      const total = data._metadata?.total || 0;
-      if (total > 0 && offset >= total) break;
-      if (crimes.length < 100) break;
+        offset += crimes.length;
+        const total = data._metadata?.total || 0;
+        if (total > 0 && offset >= total) break;
+        if (crimes.length < 100) break;
+      }
     }
 
     console.log(
@@ -233,7 +235,7 @@
 
     let activeNeeds;
     try {
-      activeNeeds = await fetchPlanningCrimes(apiKey);
+      activeNeeds = await fetchActiveCrimes(apiKey);
     } catch (err) {
       console.error("❌ OC Retrieve: failed to fetch planning crimes:", err);
       return;
@@ -261,7 +263,7 @@
   window.OCItemRetrieve = {
     OC_ITEMS,
     getApiKey,
-    fetchPlanningCrimes,
+    fetchActiveCrimes,
     clearMarkers,
     rescan: () => main(),
   };
