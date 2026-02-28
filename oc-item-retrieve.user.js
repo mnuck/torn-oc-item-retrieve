@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.9
+// @version      1.4.0
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -19,19 +19,19 @@
   // Items discovered from faction completed crimes history.
   // Map of item ID -> item name for all items that appear as OC slot requirements.
   const OC_ITEMS = new Map([
-    [70, "Polymorphic Virus"],
-    [71, "Tunneling Virus"],
-    [103, "Firewalk Virus"],
-    [159, "Bolt Cutters"],
-    [172, "Gasoline"],
-    [201, "PCP"],
-    [327, "Blank Casino Chips"],
-    [568, "Jemmy"],
-    [576, "Chloroform"],
-    [579, "Wireless Dongle"],
-    [643, "Construction Helmet"],
-    [856, "Spray Paint : Black"],
-    [981, "Wire Cutters"],
+    [70,   "Polymorphic Virus"],
+    [71,   "Tunneling Virus"],
+    [103,  "Firewalk Virus"],
+    [159,  "Bolt Cutters"],
+    [172,  "Gasoline"],
+    [201,  "PCP"],
+    [327,  "Blank Casino Chips"],
+    [568,  "Jemmy"],
+    [576,  "Chloroform"],
+    [579,  "Wireless Dongle"],
+    [643,  "Construction Helmet"],
+    [856,  "Spray Paint : Black"],
+    [981,  "Wire Cutters"],
     [1012, "Blood Bag : Irradiated"],
     [1080, "Billfold"],
     [1094, "Syringe"],
@@ -51,9 +51,19 @@
     [1431, "Core Drill"],
   ]);
 
-
   const STYLE_ID = "oc-retrieve-highlighter-style";
-  const MARKER_ATTR = "data-oc-retrieve-checked";
+
+  // Runtime state — populated after init, exposed on window.OCItemRetrieve
+  let _activeNeeds  = null;  // Map<userId, Set<itemId>>
+  let _itemNeedsMap = null;  // Map<itemId, Array<{id, name}>>
+  let _debug        = false;
+
+  // ─── Logging ──────────────────────────────────────────────────────────────────
+
+  function log(...args)  { console.log("🔵 OC Retrieve:", ...args); }
+  function dbg(...args)  { if (_debug) console.log("🔧 OC Retrieve [debug]:", ...args); }
+
+  // ─── Styles ───────────────────────────────────────────────────────────────────
 
   function injectStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -104,36 +114,35 @@
       }
     `;
     document.head.appendChild(style);
-    console.log("🟢 OC Retrieve: styles injected");
+    log("styles injected");
   }
+
+  // ─── API Key ──────────────────────────────────────────────────────────────────
 
   function getApiKey() {
     let key = GM_getValue("tornApiKey", "");
     if (!key) {
-      key = prompt(
-        "Torn OC Item Retrieve Highlighter\n\nEnter your Torn API key (needs faction access):"
-      );
+      key = prompt("Torn OC Item Retrieve Highlighter\n\nEnter your Torn API key (needs faction access):");
       if (key) {
         GM_setValue("tornApiKey", key.trim());
-        console.log("🔑 OC Retrieve: API key saved");
+        log("API key saved");
       }
     }
     return key ? key.trim() : null;
   }
 
+  // ─── API ──────────────────────────────────────────────────────────────────────
+
   function tornApiGet(url) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: "GET",
-        url: url,
+        url,
         onload: (response) => {
           try {
             const data = JSON.parse(response.responseText);
-            if (data.error) {
-              reject(new Error(`API error: ${JSON.stringify(data.error)}`));
-            } else {
-              resolve(data);
-            }
+            if (data.error) reject(new Error(`API error: ${JSON.stringify(data.error)}`));
+            else resolve(data);
           } catch (e) {
             reject(new Error(`JSON parse error: ${e.message}`));
           }
@@ -144,8 +153,8 @@
   }
 
   async function fetchActiveCrimes(apiKey) {
-    const activeNeeds = new Map(); // userID -> Set<itemID>
-    const rawItemNeeds = new Map(); // itemID -> Set<userID> (only for items not yet held)
+    const activeNeeds  = new Map(); // userID -> Set<itemID>
+    const rawItemNeeds = new Map(); // itemID -> Set<userID> (items not yet held by member)
 
     for (const cat of ["recruiting", "planning"]) {
       let offset = 0;
@@ -158,19 +167,13 @@
         for (const crime of crimes) {
           for (const slot of crime.slots || []) {
             const itemReq = slot.item_requirement;
-            const user = slot.user;
-            if (itemReq && itemReq.id && user && user.id) {
-              // Track who needs what (for retrieve highlighting)
-              if (!activeNeeds.has(user.id)) {
-                activeNeeds.set(user.id, new Set());
-              }
+            const user    = slot.user;
+            if (itemReq?.id && user?.id) {
+              if (!activeNeeds.has(user.id)) activeNeeds.set(user.id, new Set());
               activeNeeds.get(user.id).add(itemReq.id);
 
-              // Track what items are needed but not yet held (for loan highlighting)
               if (itemReq.is_available === false) {
-                if (!rawItemNeeds.has(itemReq.id)) {
-                  rawItemNeeds.set(itemReq.id, new Set());
-                }
+                if (!rawItemNeeds.has(itemReq.id)) rawItemNeeds.set(itemReq.id, new Set());
                 rawItemNeeds.get(itemReq.id).add(user.id);
               }
             }
@@ -184,9 +187,7 @@
       }
     }
 
-    console.log(
-      `📋 OC Retrieve: ${activeNeeds.size} members with active OC item needs`
-    );
+    log(`${activeNeeds.size} members with active OC item needs`);
     return { activeNeeds, rawItemNeeds };
   }
 
@@ -200,9 +201,7 @@
       if (members.length === 0) break;
 
       for (const member of members) {
-        if (member.id && member.name) {
-          memberNames.set(member.id, member.name);
-        }
+        if (member.id && member.name) memberNames.set(member.id, member.name);
       }
 
       offset += members.length;
@@ -211,7 +210,7 @@
       if (members.length < 100) break;
     }
 
-    console.log(`👥 OC Retrieve: ${memberNames.size} faction members loaded`);
+    log(`${memberNames.size} faction members loaded`);
     return memberNames;
   }
 
@@ -226,16 +225,16 @@
     return map;
   }
 
-  function renderMissingItemsPanel(missingItems) {
-    // missingItems: Array<{id: number, name: string, needers: Array<{id, name}>}>
+  // ─── Missing Items Panel ──────────────────────────────────────────────────────
 
-    // Anti-loop guard: skip DOM update if content hasn't changed
-    const newKey = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
+  function renderMissingItemsPanel(missingItems) {
+    const newKey  = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
     const existing = document.getElementById("oc-missing-items-panel");
+
+    // Skip DOM write if content unchanged — prevents MutationObserver re-trigger
     if (existing && existing.dataset.missingIds === newKey) return;
 
-    // Find insertion point: before the first armory items list
-    const firstRow = document.querySelector("li:has(div.img-wrap[data-itemid])");
+    const firstRow    = document.querySelector("li:has(div.img-wrap[data-itemid])");
     const insertTarget = firstRow ? firstRow.closest("ul") : null;
 
     if (missingItems.length === 0) {
@@ -249,10 +248,9 @@
 
     const itemList = missingItems.map(m => {
       const count = m.needers.length;
-      const noun = count === 1 ? "person needs" : "people need";
-      const searchName = encodeURIComponent(m.name);
-      const marketUrl = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${searchName}`;
-      return `<li><a href="${marketUrl}" target="_blank">${m.name}</a> — ${count} ${noun} it</li>`;
+      const noun  = count === 1 ? "person needs" : "people need";
+      const url   = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(m.name)}`;
+      return `<li><a href="${url}" target="_blank">${m.name}</a> — ${count} ${noun} it</li>`;
     }).join("");
 
     panel.innerHTML = `<h4>⚠ Missing Items — Need to Purchase</h4><ul>${itemList}</ul>`;
@@ -262,88 +260,99 @@
     }
   }
 
+  // ─── Scan ─────────────────────────────────────────────────────────────────────
+  //
+  // The scan is IDEMPOTENT — safe to call any number of times. There is no
+  // "already processed" row skip. Instead, each element carries its own state:
+  //
+  //   data-oc-handled        on loanBtn or retrieveLink — handler already attached,
+  //                          annotation already added; skip setup but keep highlight.
+  //   data-oc-loan-submitted on the row — user clicked Loan; skip row entirely.
+  //
+  // clearMarkers() removes data-oc-handled so re-attaches happen after a hash
+  // change. It intentionally preserves data-oc-loan-submitted so rows where a
+  // loan was already initiated stay suppressed across navigation.
+
   function scanArmoryRows(activeNeeds, itemNeedsMap) {
     const rows = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
-
-    let highlighted = 0;
-    let loanSuggested = 0;
-    let checked = 0;
-
-    // Build set of ALL OC item IDs in armory regardless of marker status.
-    // Must be done outside the main loop because marked rows are skipped —
-    // on re-scans (MutationObserver) all rows are already marked, so building
-    // inArmoryItems inside the loop would leave it empty and cause false positives.
     const inArmoryItems = new Set();
-    for (const row of rows) {
-      const iw = row.querySelector("div.img-wrap[data-itemid]");
-      if (!iw) continue;
-      const id = parseInt(iw.dataset.itemid, 10);
-      if (OC_ITEMS.has(id)) inArmoryItems.add(id);
-    }
+    let highlighted   = 0;
+    let loanSuggested = 0;
+    let checked       = 0;
 
     for (const row of rows) {
-      if (row.hasAttribute(MARKER_ATTR)) continue;
-      if (row.hasAttribute("data-oc-loan-submitted")) continue;
-      row.setAttribute(MARKER_ATTR, "1");
+      if (row.dataset.ocLoanSubmitted) {
+        dbg("skip — loan already submitted for this row");
+        continue;
+      }
 
       const imgWrap = row.querySelector("div.img-wrap[data-itemid]");
       if (!imgWrap) continue;
+
       const itemId = parseInt(imgWrap.dataset.itemid, 10);
-      if (!OC_ITEMS.has(itemId)) continue;
+      if (!OC_ITEMS.has(itemId)) {
+        dbg(`itemId=${itemId} — not an OC item`);
+        continue;
+      }
+
+      inArmoryItems.add(itemId);
 
       const userLink = row.querySelector("div.loaned a[href*='profiles.php']");
 
       if (!userLink) {
-        // Available (not loaned out) — check if anyone needs this item
+        // Item is available — check if anyone needs it loaned
         const loanBtn = row.querySelector("a.loan.active[data-role='loan']");
-        if (loanBtn && itemNeedsMap && itemNeedsMap.has(itemId)) {
-          const needers = itemNeedsMap.get(itemId); // Array<{id, name}>
-          const first = needers[0];
 
-          // Highlight the loan button
-          loanBtn.classList.add("oc-retrieve-ready");
+        if (!loanBtn || !itemNeedsMap || !itemNeedsMap.has(itemId)) {
+          dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — available, no one needs a loan`);
+          continue;
+        }
+
+        const needers = itemNeedsMap.get(itemId); // Array<{id, name}>
+        const first   = needers[0];
+
+        loanBtn.classList.add("oc-retrieve-ready"); // idempotent
+
+        if (!loanBtn.dataset.ocHandled) {
+          loanBtn.dataset.ocHandled = "1";
           loanSuggested++;
 
-          // Always-visible annotation showing who needs this item
           const tag = document.createElement("span");
-          tag.className = "oc-loan-target";
+          tag.className  = "oc-loan-target";
           tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
           loanBtn.insertAdjacentElement("afterend", tag);
 
-          // Auto-fill on click: fill the visible autocomplete input in this row
-          // with the first needing member's name, and create the hidden backing field.
-          loanBtn.addEventListener("click", function() {
-            // Visual cleanup
+          loanBtn.addEventListener("click", function () {
             loanBtn.classList.remove("oc-retrieve-ready");
             row.querySelector(".oc-loan-target")?.remove();
-            row.setAttribute("data-oc-loan-submitted", "1");
-            console.log("💚 OC Retrieve: loan clicked, row cleaned up");
+            row.dataset.ocLoanSubmitted = "1";
+            log(`loan clicked — item: ${OC_ITEMS.get(itemId)} (${itemId}), filling for ${first.name} [${first.id}]`);
 
-            const fillForm = function() {
+            const fillForm = function () {
               // Find the visible autocomplete input in this row (non-zero width)
               const allInps = row.querySelectorAll("input.ac-search[name='user']");
               let visibleInput = null;
               for (const inp of allInps) {
-                if (inp.getBoundingClientRect().width > 0) {
-                  visibleInput = inp;
-                  break;
-                }
+                if (inp.getBoundingClientRect().width > 0) { visibleInput = inp; break; }
               }
-              if (!visibleInput) return;
+              if (!visibleInput) {
+                log("fillForm: no visible input found — form may not have activated yet");
+                return;
+              }
 
-              // Set value — no event dispatch (that triggers jQuery UI autocomplete reset)
-              // Must be "Name [ID]" format — Torn's form requires the ID suffix to validate.
-              const fillValue = first.name + " [" + first.id + "]";
+              // Must be "Name [ID]" — Torn's form validation requires the ID suffix
+              const fillValue = `${first.name} [${first.id}]`;
               visibleInput.value = fillValue;
+              dbg(`fillForm: set value = "${fillValue}"`);
 
-              // Re-apply if jQuery UI clears the value on focus
-              visibleInput.addEventListener("focusin", function() {
-                setTimeout(function() {
+              // Re-apply if jQuery UI clears on focus
+              visibleInput.addEventListener("focusin", function () {
+                setTimeout(function () {
                   if (visibleInput.value === "") visibleInput.value = fillValue;
                 }, 0);
               }, { once: true });
 
-              // Create/update hidden backing field (format expected by form submission)
+              // Create/update hidden backing field
               let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
               if (!hiddenInput) {
                 hiddenInput = document.createElement("input");
@@ -351,112 +360,103 @@
                 hiddenInput.name = "user";
                 visibleInput.insertAdjacentElement("afterend", hiddenInput);
               }
-              hiddenInput.value = first.name + " [" + first.id + "]";
+              hiddenInput.value = fillValue;
             };
 
             setTimeout(fillForm, 0);
             setTimeout(fillForm, 300);
           }, { once: true });
+
+          dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan button set up for: ${needers.map(n => n.name).join(", ")}`);
+        } else {
+          dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan handler already attached, glow reapplied`);
         }
+
         continue;
       }
 
-      // Loaned out — check if safe to retrieve
+      // Item is loaned out — check if safe to retrieve
       const xidMatch = userLink.href.match(/XID=(\d+)/);
       if (!xidMatch) continue;
       const userId = parseInt(xidMatch[1], 10);
-
       checked++;
 
-      const userNeeds = activeNeeds.get(userId);
+      const userNeeds      = activeNeeds.get(userId);
       const currentlyNeeded = userNeeds && userNeeds.has(itemId);
 
-      if (!currentlyNeeded) {
-        const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
-        if (retrieveLink) {
-          retrieveLink.classList.add("oc-retrieve-ready");
-          highlighted++;
-        }
+      if (currentlyNeeded) {
+        dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) loaned to userId=${userId} — still needed, no retrieve`);
+        continue;
+      }
+
+      const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
+      if (!retrieveLink) continue;
+
+      retrieveLink.classList.add("oc-retrieve-ready"); // idempotent
+
+      if (!retrieveLink.dataset.ocHandled) {
+        retrieveLink.dataset.ocHandled = "1";
+        highlighted++;
+        dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) loaned to userId=${userId} — OC done, safe to retrieve`);
       }
     }
 
-    // Compute items needed by OC members that don't exist in the armory at all
+    // Panel: items needed by OC members that the faction has no stock of
     if (itemNeedsMap) {
-      const missingItems = [];
-      for (const [itemId, needers] of itemNeedsMap) {
-        if (!inArmoryItems.has(itemId)) {
-          missingItems.push({
-            id: itemId,
-            name: OC_ITEMS.get(itemId) || `Item ${itemId}`,
-            needers,
-          });
-        }
-      }
-      missingItems.sort((a, b) => a.name.localeCompare(b.name));
+      const missingItems = [...itemNeedsMap.entries()]
+        .filter(([id]) => !inArmoryItems.has(id))
+        .map(([id, needers]) => ({ id, name: OC_ITEMS.get(id) || `Item ${id}`, needers }))
+        .sort((a, b) => a.name.localeCompare(b.name));
       renderMissingItemsPanel(missingItems);
     }
 
-    if (checked > 0 || loanSuggested > 0) {
-      console.log(
-        `🔍 OC Retrieve: checked ${checked} loaned OC items, highlighted ${highlighted} for retrieve, ${loanSuggested} loan suggestions`
-      );
+    if (checked > 0 || loanSuggested > 0 || highlighted > 0) {
+      log(`scan — ${checked} loaned OC items checked, ${highlighted} flagged for retrieve, ${loanSuggested} loan suggestions`);
     }
   }
 
+  // ─── Markers ──────────────────────────────────────────────────────────────────
+
   function clearMarkers() {
-    const marked = document.querySelectorAll(`[${MARKER_ATTR}]`);
-    for (const el of marked) {
-      el.removeAttribute(MARKER_ATTR);
-    }
-    const glowing = document.querySelectorAll(".oc-retrieve-ready");
-    for (const el of glowing) {
-      el.classList.remove("oc-retrieve-ready");
-    }
-    const tags = document.querySelectorAll(".oc-loan-target");
-    for (const el of tags) {
-      el.remove();
-    }
-    const panel = document.getElementById("oc-missing-items-panel");
-    if (panel) panel.remove();
+    document.querySelectorAll(".oc-retrieve-ready").forEach(el => el.classList.remove("oc-retrieve-ready"));
+    document.querySelectorAll(".oc-loan-target").forEach(el => el.remove());
+    document.getElementById("oc-missing-items-panel")?.remove();
+    // Clear per-element handler flags so next scan re-attaches cleanly
+    document.querySelectorAll("[data-oc-handled]").forEach(el => delete el.dataset.ocHandled);
+    // Intentionally NOT clearing data-oc-loan-submitted — already-loaned rows
+    // stay suppressed across tab navigation.
   }
+
+  // ─── Debounced Scan ───────────────────────────────────────────────────────────
 
   let scanTimeout = null;
   function debouncedScan(activeNeeds, itemNeedsMap) {
     if (scanTimeout) clearTimeout(scanTimeout);
-    scanTimeout = setTimeout(() => {
-      // Do NOT call clearMarkers() here — removing our annotation spans triggers
-      // another MutationObserver fire, creating an infinite scan loop that also
-      // causes Torn's JS to reinitialize the loan form and clear the autofill.
-      // Already-marked rows are skipped via MARKER_ATTR; only new AJAX-added
-      // rows need processing. clearMarkers is called on hash changes instead.
-      scanArmoryRows(activeNeeds, itemNeedsMap);
-    }, 500);
+    scanTimeout = setTimeout(() => scanArmoryRows(activeNeeds, itemNeedsMap), 500);
   }
 
+  // ─── Main ─────────────────────────────────────────────────────────────────────
+
   async function main() {
-    // Only run on the armory tab
     if (!window.location.hash.includes("armoury")) {
-      // Watch for hash changes to the armory tab
       window.addEventListener("hashchange", () => {
-        if (window.location.hash.includes("armoury")) {
-          main();
-        }
+        if (window.location.hash.includes("armoury")) main();
       });
       return;
     }
 
-    console.log("🚀 OC Retrieve: starting");
+    log("starting");
     injectStyles();
 
     const apiKey = getApiKey();
     if (!apiKey) {
-      console.log("❌ OC Retrieve: no API key, aborting");
+      console.error("❌ OC Retrieve: no API key, aborting");
       return;
     }
 
-    let activeNeeds, rawItemNeeds, memberNames;
+    let rawItemNeeds, memberNames;
     try {
-      [{ activeNeeds, rawItemNeeds }, memberNames] = await Promise.all([
+      [{ activeNeeds: _activeNeeds, rawItemNeeds }, memberNames] = await Promise.all([
         fetchActiveCrimes(apiKey),
         fetchMemberNames(apiKey),
       ]);
@@ -465,35 +465,124 @@
       return;
     }
 
-    const itemNeedsMap = buildItemNeedsMap(rawItemNeeds, memberNames);
+    _itemNeedsMap = buildItemNeedsMap(rawItemNeeds, memberNames);
 
-    // Initial scan
-    scanArmoryRows(activeNeeds, itemNeedsMap);
+    scanArmoryRows(_activeNeeds, _itemNeedsMap);
 
-    // Watch for DOM changes (pagination, tab switches, AJAX reloads)
-    const observer = new MutationObserver(() => debouncedScan(activeNeeds, itemNeedsMap));
+    const observer = new MutationObserver(() => debouncedScan(_activeNeeds, _itemNeedsMap));
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // Also re-scan on hash changes (sub-tab navigation)
     window.addEventListener("hashchange", () => {
       if (window.location.hash.includes("armoury")) {
         clearMarkers();
-        debouncedScan(activeNeeds, itemNeedsMap);
+        debouncedScan(_activeNeeds, _itemNeedsMap);
       }
     });
 
-    console.log("👀 OC Retrieve: watching for DOM changes");
+    log("watching for DOM changes");
   }
 
-  // Expose for debugging
+  // ─── Debug Surface ────────────────────────────────────────────────────────────
+
   window.OCItemRetrieve = {
+    // Static data
     OC_ITEMS,
+
+    // Live API data (available after page load completes)
+    get activeNeeds()  { return _activeNeeds; },
+    get itemNeedsMap() { return _itemNeedsMap; },
+
+    // Toggle verbose per-row logging: OCItemRetrieve.debug = true
+    get debug() { return _debug; },
+    set debug(v) { _debug = !!v; log(`debug mode ${_debug ? "ON" : "OFF"}`); },
+
+    // Re-run scan without touching existing state
+    rescan() {
+      if (!_activeNeeds) { console.warn("OC Retrieve: not initialized yet"); return; }
+      scanArmoryRows(_activeNeeds, _itemNeedsMap);
+    },
+
+    // Clear visual highlights + handler flags, then re-scan.
+    // Preserves data-oc-loan-submitted (already-loaned rows stay hidden).
+    refresh() {
+      clearMarkers();
+      if (_activeNeeds) scanArmoryRows(_activeNeeds, _itemNeedsMap);
+    },
+
+    // Nuclear reset — clears everything including loan-submitted flags.
+    // Use after manually retrieving a loaned item to get a clean view.
+    hardReset() {
+      clearMarkers();
+      document.querySelectorAll("[data-oc-loan-submitted]")
+        .forEach(el => delete el.dataset.ocLoanSubmitted);
+      if (_activeNeeds) scanArmoryRows(_activeNeeds, _itemNeedsMap);
+    },
+
+    // Dump full diagnostic for row N (0-indexed) to the console.
+    // OCItemRetrieve.inspectRow(0)
+    inspectRow(n = 0) {
+      const rows = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
+      const row  = rows[n];
+      if (!row) { console.warn(`OC Retrieve: no row at index ${n} (${rows.length} total)`); return; }
+
+      const imgWrap     = row.querySelector("div.img-wrap[data-itemid]");
+      const itemId      = imgWrap ? parseInt(imgWrap.dataset.itemid, 10) : null;
+      const userLink    = row.querySelector("div.loaned a[href*='profiles.php']");
+      const loanBtn     = row.querySelector("a.loan.active[data-role='loan']");
+      const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
+      const userId      = userLink?.href.match(/XID=(\d+)/)?.[1];
+      const uid         = userId ? parseInt(userId, 10) : null;
+
+      console.group(`OC Retrieve: row[${n}]`);
+      console.log("itemId :", itemId, "→", OC_ITEMS.get(itemId) || "(not an OC item)");
+      console.log("status :", userLink ? `loaned to userId=${uid}` : "available in armory");
+      console.log("loanSubmitted:", !!row.dataset.ocLoanSubmitted);
+      if (loanBtn) {
+        console.log("loanBtn:", { handled: !!loanBtn.dataset.ocHandled, glowing: loanBtn.classList.contains("oc-retrieve-ready") });
+      }
+      if (retrieveLink) {
+        console.log("retrieveLink:", { handled: !!retrieveLink.dataset.ocHandled, glowing: retrieveLink.classList.contains("oc-retrieve-ready") });
+      }
+      if (uid && _activeNeeds) {
+        const needs = _activeNeeds.get(uid);
+        console.log(`activeNeeds for userId=${uid}:`, needs ? [...needs].map(id => `${id} (${OC_ITEMS.get(id)})`) : "none");
+        console.log("currentlyNeeded:", !!(needs?.has(itemId)));
+      }
+      if (itemId && _itemNeedsMap) {
+        const needers = _itemNeedsMap.get(itemId);
+        console.log("needers for this item:", needers?.map(n => `${n.name} [${n.id}]`) || "none");
+      }
+      console.groupEnd();
+    },
+
+    // Quick summary of all OC item rows — spot unexpected state at a glance.
+    // OCItemRetrieve.inspectAll()
+    inspectAll() {
+      const rows = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
+      console.group(`OC Retrieve: all ${rows.length} OC item rows`);
+      rows.forEach((row, i) => {
+        const iw          = row.querySelector("div.img-wrap[data-itemid]");
+        const itemId      = iw ? parseInt(iw.dataset.itemid, 10) : null;
+        const userLink    = row.querySelector("div.loaned a[href*='profiles.php']");
+        const uid         = userLink?.href.match(/XID=(\d+)/)?.[1];
+        const loanBtn     = row.querySelector("a.loan.active[data-role='loan']");
+        const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
+        const flags = [
+          row.dataset.ocLoanSubmitted               ? "LOAN_SUBMITTED" : "",
+          loanBtn?.classList.contains("oc-retrieve-ready")     ? "LOAN_GLOW"      : "",
+          retrieveLink?.classList.contains("oc-retrieve-ready") ? "RETRIEVE_GLOW"  : "",
+        ].filter(Boolean).join(" ");
+        console.log(`[${i}]`, OC_ITEMS.get(itemId) || `id=${itemId}`, userLink ? `loaned→${uid}` : "available", flags || "(no flags)");
+      });
+      console.groupEnd();
+    },
+
+    // Low-level helpers for manual re-fetch from console
     getApiKey,
     fetchActiveCrimes,
     fetchMemberNames,
     buildItemNeedsMap,
     clearMarkers,
-    rescan: () => main(),
   };
 
   main();
