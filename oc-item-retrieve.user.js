@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.0
+// @version      1.3.1
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -207,6 +207,7 @@
 
     for (const row of rows) {
       if (row.hasAttribute(MARKER_ATTR)) continue;
+      if (row.hasAttribute("data-oc-loan-submitted")) continue;
       row.setAttribute(MARKER_ATTR, "1");
 
       const imgWrap = row.querySelector("div.img-wrap[data-itemid]");
@@ -233,8 +234,8 @@
           tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
           loanBtn.insertAdjacentElement("afterend", tag);
 
-          // Fix 2: Auto-fill at scan time — inputs are already in DOM (display: inline-block).
-          // Do NOT dispatch events — jQuery UI autocomplete resets value on any input event.
+          // Auto-fill: inputs are already in DOM at page load (display: inline-block).
+          // Set value directly — do NOT dispatch events (jQuery UI resets on input events).
           const visibleInput = row.querySelector("input.ac-search[name='user']");
           if (visibleInput) {
             visibleInput.value = first.name;
@@ -245,6 +246,8 @@
               }, 0);
             });
           }
+          // Diagnostic: log whether fill worked (remove once auto-fill is confirmed working)
+          console.log("🔧 OC fill: item", itemId, "| input found:", !!visibleInput, "| value:", visibleInput ? '"' + visibleInput.value + '"' : "n/a");
 
           // Create hidden backing field now (format: "Name [ID]").
           // jQuery UI normally creates this on user selection; we create it early.
@@ -257,19 +260,19 @@
           }
           hiddenInput.value = first.name + " [" + first.id + "]";
 
-          // Fix 3: Post-loan row cleanup — observe row for loan completing.
+          // Post-loan cleanup: Torn AJAX does not update div.loaned in the DOM,
+          // so clean up immediately on click. data-oc-loan-submitted persists through
+          // clearMarkers() to prevent the debounced re-scan from re-highlighting.
           loanBtn.addEventListener("click", function() {
-            const cleanupObserver = new MutationObserver(function() {
-              if (row.querySelector("div.loaned a[href*='profiles.php']")) {
-                cleanupObserver.disconnect();
-                row.querySelector(".oc-retrieve-ready")?.classList.remove("oc-retrieve-ready");
-                row.querySelector(".oc-loan-target")?.remove();
-                row.removeAttribute(MARKER_ATTR);
-                console.log("💚 OC Retrieve: loan complete, row cleaned up");
-              }
-            });
-            cleanupObserver.observe(row, { childList: true, subtree: true, attributes: true });
-            setTimeout(function() { cleanupObserver.disconnect(); }, 30000);
+            loanBtn.classList.remove("oc-retrieve-ready");
+            row.querySelector(".oc-loan-target")?.remove();
+            row.setAttribute("data-oc-loan-submitted", "1");
+            console.log("💚 OC Retrieve: loan clicked, row cleaned up");
+            // Re-apply fill in case autocomplete cleared it between scan and click
+            if (visibleInput) {
+              setTimeout(function() { visibleInput.value = first.name; }, 0);
+              setTimeout(function() { visibleInput.value = first.name; }, 100);
+            }
           }, { once: true });
         }
         continue;
