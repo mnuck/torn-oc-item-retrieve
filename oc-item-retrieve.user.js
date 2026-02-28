@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.6
+// @version      1.3.7
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -234,38 +234,50 @@
           tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
           loanBtn.insertAdjacentElement("afterend", tag);
 
-          // Auto-fill on click: the loan form is hidden/inactive until Loan is clicked,
-          // so we fill after Torn activates it. Staggered timeouts catch whenever the
-          // form becomes interactive.
+          // Auto-fill on click: fill the visible autocomplete input in this row
+          // with the first needing member's name, and create the hidden backing field.
           loanBtn.addEventListener("click", function() {
-            // Visual cleanup first
+            // Visual cleanup
             loanBtn.classList.remove("oc-retrieve-ready");
             row.querySelector(".oc-loan-target")?.remove();
             row.setAttribute("data-oc-loan-submitted", "1");
             console.log("💚 OC Retrieve: loan clicked, row cleaned up");
 
-            const tryFill = function(label) {
-              // Count ALL matching inputs on the page, not just in the row
-              const allInps = document.querySelectorAll("input.ac-search[name='user']");
-              console.log("🔧 fill[" + label + "]: " + allInps.length + " total inputs on page");
-              allInps.forEach(function(inp, i) {
-                const cs = window.getComputedStyle(inp);
-                const r = inp.getBoundingClientRect();
-                const inRow = row.contains(inp);
-                console.log("🔧   [" + i + "] inRow=" + inRow + " display=" + cs.display + " visibility=" + cs.visibility + " value=\"" + inp.value + "\" rect={top:" + Math.round(r.top) + ",left:" + Math.round(r.left) + ",w:" + Math.round(r.width) + ",h:" + Math.round(r.height) + "}");
-                // Paint it so the user can find it visually
-                inp.style.outline = "3px solid red";
-                inp.style.backgroundColor = "yellow";
-                if (inp.value === "") {
-                  inp.value = first.name;
-                  console.log("🔧   [" + i + "] set to \"" + first.name + "\"");
+            const fillForm = function() {
+              // Find the visible autocomplete input in this row (non-zero width)
+              const allInps = row.querySelectorAll("input.ac-search[name='user']");
+              let visibleInput = null;
+              for (const inp of allInps) {
+                if (inp.getBoundingClientRect().width > 0) {
+                  visibleInput = inp;
+                  break;
                 }
-              });
+              }
+              if (!visibleInput) return;
+
+              // Set value — no event dispatch (that triggers jQuery UI autocomplete reset)
+              visibleInput.value = first.name;
+
+              // Re-apply if jQuery UI clears the value on focus
+              visibleInput.addEventListener("focusin", function() {
+                setTimeout(function() {
+                  if (visibleInput.value === "") visibleInput.value = first.name;
+                }, 0);
+              }, { once: true });
+
+              // Create/update hidden backing field (format expected by form submission)
+              let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
+              if (!hiddenInput) {
+                hiddenInput = document.createElement("input");
+                hiddenInput.type = "hidden";
+                hiddenInput.name = "user";
+                visibleInput.insertAdjacentElement("afterend", hiddenInput);
+              }
+              hiddenInput.value = first.name + " [" + first.id + "]";
             };
 
-            setTimeout(function() { tryFill("0ms"); }, 0);
-            setTimeout(function() { tryFill("300ms"); }, 300);
-            setTimeout(function() { tryFill("600ms"); }, 600);
+            setTimeout(fillForm, 0);
+            setTimeout(fillForm, 300);
           }, { once: true });
         }
         continue;
