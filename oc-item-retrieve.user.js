@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.4.0
+// @version      1.4.1
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -273,12 +273,138 @@
   // change. It intentionally preserves data-oc-loan-submitted so rows where a
   // loan was already initiated stay suppressed across navigation.
 
+  // Returns the OC item ID for the row, or null if the row is not an OC item.
+  function getRowItemId(row) {
+    const imgWrap = row.querySelector("div.img-wrap[data-itemid]");
+    if (!imgWrap) return null;
+    const itemId = parseInt(imgWrap.dataset.itemid, 10);
+    if (!OC_ITEMS.has(itemId)) {
+      dbg(`itemId=${itemId} — not an OC item`);
+      return null;
+    }
+    return itemId;
+  }
+
+  // Returns the userId the item is currently loaned to, or null if available.
+  function getRowLoanedUserId(row) {
+    const userLink = row.querySelector("div.loaned a[href*='profiles.php']");
+    if (!userLink) return null;
+    const match = userLink.href.match(/XID=(\d+)/);
+    return match ? parseInt(match[1], 10) : null;
+  }
+
+  // Returns the click handler for a loan button.
+  // On click: removes glow/annotation, marks row as submitted, then fills the
+  // autocomplete form with "Name [ID]" (the format Torn's form validation requires).
+  function makeLoanClickHandler(row, itemId, first, loanBtn) {
+    return function () {
+      loanBtn.classList.remove("oc-retrieve-ready");
+      row.querySelector(".oc-loan-target")?.remove();
+      row.dataset.ocLoanSubmitted = "1";
+      log(`loan clicked — item: ${OC_ITEMS.get(itemId)} (${itemId}), filling for ${first.name} [${first.id}]`);
+
+      const fillForm = function () {
+        // Find the visible autocomplete input in this row (non-zero width)
+        const allInps = row.querySelectorAll("input.ac-search[name='user']");
+        let visibleInput = null;
+        for (const inp of allInps) {
+          if (inp.getBoundingClientRect().width > 0) { visibleInput = inp; break; }
+        }
+        if (!visibleInput) {
+          log("fillForm: no visible input found — form may not have activated yet");
+          return;
+        }
+
+        const fillValue = `${first.name} [${first.id}]`;
+        visibleInput.value = fillValue;
+        dbg(`fillForm: set value = "${fillValue}"`);
+
+        // Re-apply if jQuery UI clears on focus
+        visibleInput.addEventListener("focusin", function () {
+          setTimeout(function () {
+            if (visibleInput.value === "") visibleInput.value = fillValue;
+          }, 0);
+        }, { once: true });
+
+        // Create/update hidden backing field used by Torn's form submission
+        let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
+        if (!hiddenInput) {
+          hiddenInput = document.createElement("input");
+          hiddenInput.type = "hidden";
+          hiddenInput.name = "user";
+          visibleInput.insertAdjacentElement("afterend", hiddenInput);
+        }
+        hiddenInput.value = fillValue;
+      };
+
+      setTimeout(fillForm, 0);
+      setTimeout(fillForm, 300);
+    };
+  }
+
+  // Handles an available row: glows the loan button and annotates it with
+  // the names of members who need this item. Increments stats.loanSuggested
+  // the first time the button is set up (data-oc-handled not yet set).
+  function processAvailableRow(row, itemId, itemNeedsMap, loanBtn, stats) {
+    if (!loanBtn || !itemNeedsMap || !itemNeedsMap.has(itemId)) {
+      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — available, no one needs a loan`);
+      return;
+    }
+
+    const needers = itemNeedsMap.get(itemId); // Array<{id, name}>
+    const first   = needers[0];
+
+    loanBtn.classList.add("oc-retrieve-ready"); // idempotent
+
+    if (!loanBtn.dataset.ocHandled) {
+      loanBtn.dataset.ocHandled = "1";
+      stats.loanSuggested++;
+
+      const tag = document.createElement("span");
+      tag.className   = "oc-loan-target";
+      tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
+      loanBtn.insertAdjacentElement("afterend", tag);
+
+      loanBtn.addEventListener("click", makeLoanClickHandler(row, itemId, first, loanBtn), { once: true });
+
+      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan button set up for: ${needers.map(n => n.name).join(", ")}`);
+    } else {
+      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan handler already attached, glow reapplied`);
+    }
+  }
+
+  // Handles a loaned row: highlights the Retrieve link if the holder no longer
+  // needs the item for an active OC. Increments stats.checked always;
+  // increments stats.highlighted the first time the link is flagged.
+  function processLoanedRow(row, itemId, userId, activeNeeds, stats) {
+    stats.checked++;
+
+    const userNeeds       = activeNeeds.get(userId);
+    const currentlyNeeded = userNeeds && userNeeds.has(itemId);
+
+    if (currentlyNeeded) {
+      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) loaned to userId=${userId} — still needed, no retrieve`);
+      return;
+    }
+
+    const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
+    if (!retrieveLink) return;
+
+    retrieveLink.classList.add("oc-retrieve-ready"); // idempotent
+
+    if (!retrieveLink.dataset.ocHandled) {
+      retrieveLink.dataset.ocHandled = "1";
+      stats.highlighted++;
+      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) loaned to userId=${userId} — OC done, safe to retrieve`);
+    }
+  }
+
+  // Coordinator: classifies each armory row and routes it to the appropriate
+  // processor. Updates the missing items panel and logs aggregate stats.
   function scanArmoryRows(activeNeeds, itemNeedsMap) {
-    const rows = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
+    const rows          = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
     const inArmoryItems = new Set();
-    let highlighted   = 0;
-    let loanSuggested = 0;
-    let checked       = 0;
+    const stats         = { checked: 0, highlighted: 0, loanSuggested: 0 };
 
     for (const row of rows) {
       if (row.dataset.ocLoanSubmitted) {
@@ -286,118 +412,17 @@
         continue;
       }
 
-      const imgWrap = row.querySelector("div.img-wrap[data-itemid]");
-      if (!imgWrap) continue;
-
-      const itemId = parseInt(imgWrap.dataset.itemid, 10);
-      if (!OC_ITEMS.has(itemId)) {
-        dbg(`itemId=${itemId} — not an OC item`);
-        continue;
-      }
+      const itemId = getRowItemId(row);
+      if (itemId === null) continue;
 
       inArmoryItems.add(itemId);
 
-      const userLink = row.querySelector("div.loaned a[href*='profiles.php']");
-
-      if (!userLink) {
-        // Item is available — check if anyone needs it loaned
+      const userId = getRowLoanedUserId(row);
+      if (userId === null) {
         const loanBtn = row.querySelector("a.loan.active[data-role='loan']");
-
-        if (!loanBtn || !itemNeedsMap || !itemNeedsMap.has(itemId)) {
-          dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — available, no one needs a loan`);
-          continue;
-        }
-
-        const needers = itemNeedsMap.get(itemId); // Array<{id, name}>
-        const first   = needers[0];
-
-        loanBtn.classList.add("oc-retrieve-ready"); // idempotent
-
-        if (!loanBtn.dataset.ocHandled) {
-          loanBtn.dataset.ocHandled = "1";
-          loanSuggested++;
-
-          const tag = document.createElement("span");
-          tag.className  = "oc-loan-target";
-          tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
-          loanBtn.insertAdjacentElement("afterend", tag);
-
-          loanBtn.addEventListener("click", function () {
-            loanBtn.classList.remove("oc-retrieve-ready");
-            row.querySelector(".oc-loan-target")?.remove();
-            row.dataset.ocLoanSubmitted = "1";
-            log(`loan clicked — item: ${OC_ITEMS.get(itemId)} (${itemId}), filling for ${first.name} [${first.id}]`);
-
-            const fillForm = function () {
-              // Find the visible autocomplete input in this row (non-zero width)
-              const allInps = row.querySelectorAll("input.ac-search[name='user']");
-              let visibleInput = null;
-              for (const inp of allInps) {
-                if (inp.getBoundingClientRect().width > 0) { visibleInput = inp; break; }
-              }
-              if (!visibleInput) {
-                log("fillForm: no visible input found — form may not have activated yet");
-                return;
-              }
-
-              // Must be "Name [ID]" — Torn's form validation requires the ID suffix
-              const fillValue = `${first.name} [${first.id}]`;
-              visibleInput.value = fillValue;
-              dbg(`fillForm: set value = "${fillValue}"`);
-
-              // Re-apply if jQuery UI clears on focus
-              visibleInput.addEventListener("focusin", function () {
-                setTimeout(function () {
-                  if (visibleInput.value === "") visibleInput.value = fillValue;
-                }, 0);
-              }, { once: true });
-
-              // Create/update hidden backing field
-              let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
-              if (!hiddenInput) {
-                hiddenInput = document.createElement("input");
-                hiddenInput.type = "hidden";
-                hiddenInput.name = "user";
-                visibleInput.insertAdjacentElement("afterend", hiddenInput);
-              }
-              hiddenInput.value = fillValue;
-            };
-
-            setTimeout(fillForm, 0);
-            setTimeout(fillForm, 300);
-          }, { once: true });
-
-          dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan button set up for: ${needers.map(n => n.name).join(", ")}`);
-        } else {
-          dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan handler already attached, glow reapplied`);
-        }
-
-        continue;
-      }
-
-      // Item is loaned out — check if safe to retrieve
-      const xidMatch = userLink.href.match(/XID=(\d+)/);
-      if (!xidMatch) continue;
-      const userId = parseInt(xidMatch[1], 10);
-      checked++;
-
-      const userNeeds      = activeNeeds.get(userId);
-      const currentlyNeeded = userNeeds && userNeeds.has(itemId);
-
-      if (currentlyNeeded) {
-        dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) loaned to userId=${userId} — still needed, no retrieve`);
-        continue;
-      }
-
-      const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
-      if (!retrieveLink) continue;
-
-      retrieveLink.classList.add("oc-retrieve-ready"); // idempotent
-
-      if (!retrieveLink.dataset.ocHandled) {
-        retrieveLink.dataset.ocHandled = "1";
-        highlighted++;
-        dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) loaned to userId=${userId} — OC done, safe to retrieve`);
+        processAvailableRow(row, itemId, itemNeedsMap, loanBtn, stats);
+      } else {
+        processLoanedRow(row, itemId, userId, activeNeeds, stats);
       }
     }
 
@@ -410,6 +435,7 @@
       renderMissingItemsPanel(missingItems);
     }
 
+    const { checked, highlighted, loanSuggested } = stats;
     if (checked > 0 || loanSuggested > 0 || highlighted > 0) {
       log(`scan — ${checked} loaned OC items checked, ${highlighted} flagged for retrieve, ${loanSuggested} loan suggestions`);
     }
