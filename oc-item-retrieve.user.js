@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.8
+// @version      1.3.9
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -73,6 +73,34 @@
         font-size: 0.85em;
         margin-left: 4px;
         font-style: italic;
+      }
+      #oc-missing-items-panel {
+        background: #1a1a2e;
+        border: 1px solid #e74c3c;
+        border-radius: 4px;
+        padding: 8px 12px;
+        margin-bottom: 10px;
+        font-size: 0.9em;
+      }
+      #oc-missing-items-panel h4 {
+        color: #e74c3c;
+        margin: 0 0 6px 0;
+        font-size: 1em;
+      }
+      #oc-missing-items-panel ul {
+        margin: 0;
+        padding: 0 0 0 16px;
+      }
+      #oc-missing-items-panel li {
+        color: #f0f0f0;
+        margin: 2px 0;
+      }
+      #oc-missing-items-panel li a {
+        color: #e74c3c;
+        text-decoration: none;
+      }
+      #oc-missing-items-panel li a:hover {
+        text-decoration: underline;
       }
     `;
     document.head.appendChild(style);
@@ -198,12 +226,60 @@
     return map;
   }
 
+  function renderMissingItemsPanel(missingItems) {
+    // missingItems: Array<{id: number, name: string, needers: Array<{id, name}>}>
+
+    // Anti-loop guard: skip DOM update if content hasn't changed
+    const newKey = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
+    const existing = document.getElementById("oc-missing-items-panel");
+    if (existing && existing.dataset.missingIds === newKey) return;
+
+    // Find insertion point: before the first armory items list
+    const firstRow = document.querySelector("li:has(div.img-wrap[data-itemid])");
+    const insertTarget = firstRow ? firstRow.closest("ul") : null;
+
+    if (missingItems.length === 0) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const panel = existing || document.createElement("div");
+    panel.id = "oc-missing-items-panel";
+    panel.dataset.missingIds = newKey;
+
+    const itemList = missingItems.map(m => {
+      const count = m.needers.length;
+      const noun = count === 1 ? "person needs" : "people need";
+      const searchName = encodeURIComponent(m.name);
+      const marketUrl = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${searchName}`;
+      return `<li><a href="${marketUrl}" target="_blank">${m.name}</a> — ${count} ${noun} it</li>`;
+    }).join("");
+
+    panel.innerHTML = `<h4>⚠ Missing Items — Need to Purchase</h4><ul>${itemList}</ul>`;
+
+    if (!existing && insertTarget) {
+      insertTarget.insertAdjacentElement("beforebegin", panel);
+    }
+  }
+
   function scanArmoryRows(activeNeeds, itemNeedsMap) {
     const rows = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
 
     let highlighted = 0;
     let loanSuggested = 0;
     let checked = 0;
+
+    // Build set of ALL OC item IDs in armory regardless of marker status.
+    // Must be done outside the main loop because marked rows are skipped —
+    // on re-scans (MutationObserver) all rows are already marked, so building
+    // inArmoryItems inside the loop would leave it empty and cause false positives.
+    const inArmoryItems = new Set();
+    for (const row of rows) {
+      const iw = row.querySelector("div.img-wrap[data-itemid]");
+      if (!iw) continue;
+      const id = parseInt(iw.dataset.itemid, 10);
+      if (OC_ITEMS.has(id)) inArmoryItems.add(id);
+    }
 
     for (const row of rows) {
       if (row.hasAttribute(MARKER_ATTR)) continue;
@@ -304,6 +380,22 @@
       }
     }
 
+    // Compute items needed by OC members that don't exist in the armory at all
+    if (itemNeedsMap) {
+      const missingItems = [];
+      for (const [itemId, needers] of itemNeedsMap) {
+        if (!inArmoryItems.has(itemId)) {
+          missingItems.push({
+            id: itemId,
+            name: OC_ITEMS.get(itemId) || `Item ${itemId}`,
+            needers,
+          });
+        }
+      }
+      missingItems.sort((a, b) => a.name.localeCompare(b.name));
+      renderMissingItemsPanel(missingItems);
+    }
+
     if (checked > 0 || loanSuggested > 0) {
       console.log(
         `🔍 OC Retrieve: checked ${checked} loaned OC items, highlighted ${highlighted} for retrieve, ${loanSuggested} loan suggestions`
@@ -324,6 +416,8 @@
     for (const el of tags) {
       el.remove();
     }
+    const panel = document.getElementById("oc-missing-items-panel");
+    if (panel) panel.remove();
   }
 
   let scanTimeout = null;
