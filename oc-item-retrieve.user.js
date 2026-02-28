@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.2
+// @version      1.3.3
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -234,8 +234,9 @@
           tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
           loanBtn.insertAdjacentElement("afterend", tag);
 
-          // Auto-fill: inputs are already in DOM at page load (display: inline-block).
-          // Set value directly — do NOT dispatch events (jQuery UI resets on input events).
+          // Auto-fill: set visible input value at scan time only — do NOT insert the
+          // hidden input[name='user'] here. Inserting it triggers jQuery UI to reinitialize
+          // the autocomplete widget, which synchronously clears the visible input value.
           const visibleInput = row.querySelector("input.ac-search[name='user']");
           if (visibleInput) {
             visibleInput.value = first.name;
@@ -246,30 +247,32 @@
               }, 0);
             });
           }
-          // Create hidden backing field now (format: "Name [ID]").
-          // jQuery UI normally creates this on user selection; we create it early.
-          let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
-          if (!hiddenInput) {
-            hiddenInput = document.createElement("input");
-            hiddenInput.type = "hidden";
-            hiddenInput.name = "user";
-            if (visibleInput) visibleInput.insertAdjacentElement("afterend", hiddenInput);
-          }
-          hiddenInput.value = first.name + " [" + first.id + "]";
 
           // Post-loan cleanup: Torn AJAX does not update div.loaned in the DOM,
           // so clean up immediately on click. data-oc-loan-submitted persists through
           // clearMarkers() to prevent the debounced re-scan from re-highlighting.
+          // Hidden input is created here (on click) rather than at scan time to avoid
+          // the jQuery UI reinit that would clear the visible input.
           loanBtn.addEventListener("click", function() {
+            // Create hidden backing field (format: "Name [ID]") right before form submits
+            let hiddenInput = row.querySelector("input[type='hidden'][name='user']");
+            if (!hiddenInput) {
+              hiddenInput = document.createElement("input");
+              hiddenInput.type = "hidden";
+              hiddenInput.name = "user";
+              if (visibleInput) visibleInput.insertAdjacentElement("afterend", hiddenInput);
+            }
+            hiddenInput.value = first.name + " [" + first.id + "]";
+            // Re-apply visible fill after hidden input insertion (jQuery UI may clear it)
+            if (visibleInput) {
+              setTimeout(function() { visibleInput.value = first.name; }, 0);
+              setTimeout(function() { visibleInput.value = first.name; }, 50);
+            }
+            // Visual cleanup
             loanBtn.classList.remove("oc-retrieve-ready");
             row.querySelector(".oc-loan-target")?.remove();
             row.setAttribute("data-oc-loan-submitted", "1");
             console.log("💚 OC Retrieve: loan clicked, row cleaned up");
-            // Re-apply fill in case autocomplete cleared it between scan and click
-            if (visibleInput) {
-              setTimeout(function() { visibleInput.value = first.name; }, 0);
-              setTimeout(function() { visibleInput.value = first.name; }, 100);
-            }
           }, { once: true });
         }
         continue;
