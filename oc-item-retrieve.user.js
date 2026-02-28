@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.3.7
+// @version      1.3.8
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -256,12 +256,14 @@
               if (!visibleInput) return;
 
               // Set value — no event dispatch (that triggers jQuery UI autocomplete reset)
-              visibleInput.value = first.name;
+              // Must be "Name [ID]" format — Torn's form requires the ID suffix to validate.
+              const fillValue = first.name + " [" + first.id + "]";
+              visibleInput.value = fillValue;
 
               // Re-apply if jQuery UI clears the value on focus
               visibleInput.addEventListener("focusin", function() {
                 setTimeout(function() {
-                  if (visibleInput.value === "") visibleInput.value = first.name;
+                  if (visibleInput.value === "") visibleInput.value = fillValue;
                 }, 0);
               }, { once: true });
 
