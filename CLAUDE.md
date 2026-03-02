@@ -34,7 +34,7 @@ If Torn changes their DOM structure, these selectors will break. Check `extractI
 
 ## API
 
-- **Endpoints**: `https://api.torn.com/v2/faction/crimes?cat=recruiting` and `cat=planning` (fetched sequentially, results merged)
+- **Endpoints**: `https://api.torn.com/v2/faction/crimes?cat=recruiting` and `cat=planning` (fetched in parallel, results merged)
 - **Auth**: User's personal API key with faction access, stored via `GM_setValue`
 - **Rate limiting**: Torn allows ~100 requests/minute. The script makes 2-4 requests on page load (one per category, plus pagination if >100 crimes in either).
 

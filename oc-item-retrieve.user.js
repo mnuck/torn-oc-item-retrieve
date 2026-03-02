@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.4.1
+// @version      1.5.2
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -51,12 +51,14 @@
     [1431, "Core Drill"],
   ]);
 
-  const STYLE_ID = "oc-retrieve-highlighter-style";
+  const STYLE_ID       = "oc-retrieve-highlighter-style";
+  const ARMORY_ROW_SEL = "li:has(div.img-wrap[data-itemid])";
 
   // Runtime state — populated after init, exposed on window.OCItemRetrieve
   let _activeNeeds  = null;  // Map<userId, Set<itemId>>
   let _itemNeedsMap = null;  // Map<itemId, Array<{id, name}>>
   let _debug        = false;
+  let _initialized  = false;
 
   // ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -152,38 +154,63 @@
     });
   }
 
-  async function fetchActiveCrimes(apiKey) {
+  function setAdd(map, key, value) {
+    if (!map.has(key)) map.set(key, new Set());
+    map.get(key).add(value);
+  }
+
+  async function fetchPaginatedTorn(baseUrl, key, callback) {
+    let offset = 0;
+    while (true) {
+      const url   = `${baseUrl}&limit=100&offset=${offset}`;
+      const data  = await tornApiGet(url);
+      const items = data[key] || [];
+      if (items.length === 0) break;
+      callback(items);
+      offset += items.length;
+      const total = data._metadata?.total || 0;
+      if (total > 0 && offset >= total) break;
+      if (items.length < 100) break;
+    }
+  }
+
+  async function fetchCategoryNeeds(apiKey, cat) {
     const activeNeeds  = new Map(); // userID -> Set<itemID>
     const rawItemNeeds = new Map(); // itemID -> Set<userID> (items not yet held by member)
-
-    for (const cat of ["recruiting", "planning"]) {
-      let offset = 0;
-      while (true) {
-        const url = `https://api.torn.com/v2/faction/crimes?key=${apiKey}&cat=${cat}&limit=100&offset=${offset}`;
-        const data = await tornApiGet(url);
-        const crimes = data.crimes || [];
-        if (crimes.length === 0) break;
-
+    await fetchPaginatedTorn(
+      `https://api.torn.com/v2/faction/crimes?key=${apiKey}&cat=${cat}`,
+      "crimes",
+      (crimes) => {
         for (const crime of crimes) {
           for (const slot of crime.slots || []) {
             const itemReq = slot.item_requirement;
             const user    = slot.user;
-            if (itemReq?.id && user?.id) {
-              if (!activeNeeds.has(user.id)) activeNeeds.set(user.id, new Set());
-              activeNeeds.get(user.id).add(itemReq.id);
-
-              if (itemReq.is_available === false) {
-                if (!rawItemNeeds.has(itemReq.id)) rawItemNeeds.set(itemReq.id, new Set());
-                rawItemNeeds.get(itemReq.id).add(user.id);
-              }
-            }
+            if (!itemReq?.id || !user?.id) continue;
+            setAdd(activeNeeds, user.id, itemReq.id);
+            if (itemReq.is_available !== false) continue;
+            setAdd(rawItemNeeds, itemReq.id, user.id);
           }
         }
+      }
+    );
+    return { activeNeeds, rawItemNeeds };
+  }
 
-        offset += crimes.length;
-        const total = data._metadata?.total || 0;
-        if (total > 0 && offset >= total) break;
-        if (crimes.length < 100) break;
+  async function fetchActiveCrimes(apiKey) {
+    const [recr, plan] = await Promise.all([
+      fetchCategoryNeeds(apiKey, "recruiting"),
+      fetchCategoryNeeds(apiKey, "planning"),
+    ]);
+
+    // Merge recruiting and planning results
+    const activeNeeds  = new Map();
+    const rawItemNeeds = new Map();
+    for (const result of [recr, plan]) {
+      for (const [userId, items] of result.activeNeeds) {
+        for (const id of items) setAdd(activeNeeds, userId, id);
+      }
+      for (const [itemId, users] of result.rawItemNeeds) {
+        for (const id of users) setAdd(rawItemNeeds, itemId, id);
       }
     }
 
@@ -193,23 +220,15 @@
 
   async function fetchMemberNames(apiKey) {
     const memberNames = new Map(); // userID -> name
-    let offset = 0;
-    while (true) {
-      const url = `https://api.torn.com/v2/faction/members?key=${apiKey}&limit=100&offset=${offset}`;
-      const data = await tornApiGet(url);
-      const members = data.members || [];
-      if (members.length === 0) break;
-
-      for (const member of members) {
-        if (member.id && member.name) memberNames.set(member.id, member.name);
+    await fetchPaginatedTorn(
+      `https://api.torn.com/v2/faction/members?key=${apiKey}`,
+      "members",
+      (members) => {
+        for (const member of members) {
+          if (member.id && member.name) memberNames.set(member.id, member.name);
+        }
       }
-
-      offset += members.length;
-      const total = data._metadata?.total || 0;
-      if (total > 0 && offset >= total) break;
-      if (members.length < 100) break;
-    }
-
+    );
     log(`${memberNames.size} faction members loaded`);
     return memberNames;
   }
@@ -228,17 +247,24 @@
   // ─── Missing Items Panel ──────────────────────────────────────────────────────
 
   function renderMissingItemsPanel(missingItems) {
-    const newKey  = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
+    const newKey   = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
     const existing = document.getElementById("oc-missing-items-panel");
 
     // Skip DOM write if content unchanged — prevents MutationObserver re-trigger
     if (existing && existing.dataset.missingIds === newKey) return;
 
-    const firstRow    = document.querySelector("li:has(div.img-wrap[data-itemid])");
-    const insertTarget = firstRow ? firstRow.closest("ul") : null;
-
     if (missingItems.length === 0) {
       if (existing) existing.remove();
+      return;
+    }
+
+    const firstRow     = document.querySelector(ARMORY_ROW_SEL);
+    const insertTarget = firstRow ? firstRow.closest("ul") : null;
+
+    // No existing panel and no insertion point yet — armory list hasn't loaded;
+    // the MutationObserver will trigger another scan once items appear.
+    if (!existing && !insertTarget) {
+      dbg("renderMissingItemsPanel: armory list not yet in DOM, will retry on next scan");
       return;
     }
 
@@ -255,7 +281,7 @@
 
     panel.innerHTML = `<h4>⚠ Missing Items — Need to Purchase</h4><ul>${itemList}</ul>`;
 
-    if (!existing && insertTarget) {
+    if (!existing) {
       insertTarget.insertAdjacentElement("beforebegin", panel);
     }
   }
@@ -402,7 +428,7 @@
   // Coordinator: classifies each armory row and routes it to the appropriate
   // processor. Updates the missing items panel and logs aggregate stats.
   function scanArmoryRows(activeNeeds, itemNeedsMap) {
-    const rows          = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
+    const rows          = document.querySelectorAll(ARMORY_ROW_SEL);
     const inArmoryItems = new Set();
     const stats         = { checked: 0, highlighted: 0, loanSuggested: 0 };
 
@@ -465,11 +491,18 @@
 
   async function main() {
     if (!window.location.hash.includes("armoury")) {
-      window.addEventListener("hashchange", () => {
-        if (window.location.hash.includes("armoury")) main();
-      });
+      const onHash = () => {
+        if (window.location.hash.includes("armoury")) {
+          window.removeEventListener("hashchange", onHash);
+          main();
+        }
+      };
+      window.addEventListener("hashchange", onHash);
       return;
     }
+
+    if (_initialized) return;
+    _initialized = true;
 
     log("starting");
     injectStyles();
@@ -547,21 +580,19 @@
     // Dump full diagnostic for row N (0-indexed) to the console.
     // OCItemRetrieve.inspectRow(0)
     inspectRow(n = 0) {
-      const rows = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
+      const rows = document.querySelectorAll(ARMORY_ROW_SEL);
       const row  = rows[n];
       if (!row) { console.warn(`OC Retrieve: no row at index ${n} (${rows.length} total)`); return; }
 
-      const imgWrap     = row.querySelector("div.img-wrap[data-itemid]");
-      const itemId      = imgWrap ? parseInt(imgWrap.dataset.itemid, 10) : null;
-      const userLink    = row.querySelector("div.loaned a[href*='profiles.php']");
-      const loanBtn     = row.querySelector("a.loan.active[data-role='loan']");
+      const imgWrap      = row.querySelector("div.img-wrap[data-itemid]");
+      const itemId       = imgWrap ? parseInt(imgWrap.dataset.itemid, 10) : null;
+      const uid          = getRowLoanedUserId(row);
+      const loanBtn      = row.querySelector("a.loan.active[data-role='loan']");
       const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
-      const userId      = userLink?.href.match(/XID=(\d+)/)?.[1];
-      const uid         = userId ? parseInt(userId, 10) : null;
 
       console.group(`OC Retrieve: row[${n}]`);
       console.log("itemId :", itemId, "→", OC_ITEMS.get(itemId) || "(not an OC item)");
-      console.log("status :", userLink ? `loaned to userId=${uid}` : "available in armory");
+      console.log("status :", uid !== null ? `loaned to userId=${uid}` : "available in armory");
       console.log("loanSubmitted:", !!row.dataset.ocLoanSubmitted);
       if (loanBtn) {
         console.log("loanBtn:", { handled: !!loanBtn.dataset.ocHandled, glowing: loanBtn.classList.contains("oc-retrieve-ready") });
@@ -584,21 +615,20 @@
     // Quick summary of all OC item rows — spot unexpected state at a glance.
     // OCItemRetrieve.inspectAll()
     inspectAll() {
-      const rows = document.querySelectorAll("li:has(div.img-wrap[data-itemid])");
+      const rows = document.querySelectorAll(ARMORY_ROW_SEL);
       console.group(`OC Retrieve: all ${rows.length} OC item rows`);
       rows.forEach((row, i) => {
-        const iw          = row.querySelector("div.img-wrap[data-itemid]");
-        const itemId      = iw ? parseInt(iw.dataset.itemid, 10) : null;
-        const userLink    = row.querySelector("div.loaned a[href*='profiles.php']");
-        const uid         = userLink?.href.match(/XID=(\d+)/)?.[1];
-        const loanBtn     = row.querySelector("a.loan.active[data-role='loan']");
+        const iw           = row.querySelector("div.img-wrap[data-itemid]");
+        const itemId       = iw ? parseInt(iw.dataset.itemid, 10) : null;
+        const uid          = getRowLoanedUserId(row);
+        const loanBtn      = row.querySelector("a.loan.active[data-role='loan']");
         const retrieveLink = row.querySelector("a.retrieve.active[data-role='retrieve']");
         const flags = [
           row.dataset.ocLoanSubmitted ? "LOAN_SUBMITTED" : "",
           loanBtn?.classList.contains("oc-retrieve-ready") ? "LOAN_GLOW" : "",
           retrieveLink?.classList.contains("oc-retrieve-ready") ? "RETRIEVE_GLOW" : "",
         ].filter(Boolean).join(" ");
-        console.log(`[${i}]`, OC_ITEMS.get(itemId) || `id=${itemId}`, userLink ? `loaned→${uid}` : "available", flags || "(no flags)");
+        console.log(`[${i}]`, OC_ITEMS.get(itemId) || `id=${itemId}`, uid !== null ? `loaned→${uid}` : "available", flags || "(no flags)");
       });
       console.groupEnd();
     },
