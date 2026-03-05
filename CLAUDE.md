@@ -10,7 +10,7 @@ Single-file Tampermonkey userscript. No build step, no dependencies.
 
 - **OC_ITEMS** (line ~20): Hard-coded Map of item IDs used in organized crimes, discovered from faction completed crimes history via the Torn API. Update this when new OC types are added to the game.
 - **OC_ITEM_NAME_TO_ID** (line ~55): Reverse lookup for name-based item matching as a fallback when DOM doesn't expose item IDs directly.
-- **activeNeeds**: `Map<userID, Set<itemID>>` built at runtime from both `cat=recruiting` and `cat=planning` endpoints. Torn has two distinct active-crime statuses: "Recruiting" (filling slots) and "Planning" (all slots filled, executing). Both are fetched and merged.
+- **activeNeeds**: `Map<userID, Set<itemID>>` built at runtime from the `cat=planning` endpoint only. "Planning" means all slots are filled and the crime is actively executing.
 
 ## DOM Interaction
 
@@ -34,9 +34,9 @@ If Torn changes their DOM structure, these selectors will break. Check `extractI
 
 ## API
 
-- **Endpoints**: `https://api.torn.com/v2/faction/crimes?cat=recruiting` and `cat=planning` (fetched in parallel, results merged)
+- **Endpoints**: `https://api.torn.com/v2/faction/crimes?cat=planning` (plus pagination if >100 crimes)
 - **Auth**: User's personal API key with faction access, stored via `GM_setValue`
-- **Rate limiting**: Torn allows ~100 requests/minute. The script makes 2-4 requests on page load (one per category, plus pagination if >100 crimes in either).
+- **Rate limiting**: Torn allows ~100 requests/minute. The script makes 1+ requests on page load (one per page of planning crimes).
 
 ## Debugging
 
@@ -44,7 +44,7 @@ Open browser console and use `window.OCItemRetrieve`:
 
 ```js
 OCItemRetrieve.OC_ITEMS          // hard-coded item map
-OCItemRetrieve.fetchActiveCrimes(key)    // re-fetch recruiting + planning data
+OCItemRetrieve.fetchActiveCrimes(key)    // re-fetch planning crimes data
 OCItemRetrieve.clearMarkers()    // remove all highlights
 OCItemRetrieve.rescan()          // full re-run
 ```
