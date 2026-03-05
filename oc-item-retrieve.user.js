@@ -197,25 +197,9 @@
   }
 
   async function fetchActiveCrimes(apiKey) {
-    const [recr, plan] = await Promise.all([
-      fetchCategoryNeeds(apiKey, "recruiting"),
-      fetchCategoryNeeds(apiKey, "planning"),
-    ]);
-
-    // Merge recruiting and planning results
-    const activeNeeds  = new Map();
-    const rawItemNeeds = new Map();
-    for (const result of [recr, plan]) {
-      for (const [userId, items] of result.activeNeeds) {
-        for (const id of items) setAdd(activeNeeds, userId, id);
-      }
-      for (const [itemId, users] of result.rawItemNeeds) {
-        for (const id of users) setAdd(rawItemNeeds, itemId, id);
-      }
-    }
-
-    log(`${activeNeeds.size} members with active OC item needs`);
-    return { activeNeeds, rawItemNeeds };
+    const result = await fetchCategoryNeeds(apiKey, "planning");
+    log(`${result.activeNeeds.size} members with active OC item needs`);
+    return result;
   }
 
   async function fetchMemberNames(apiKey) {
