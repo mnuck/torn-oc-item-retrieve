@@ -174,11 +174,11 @@
     }
   }
 
-  async function fetchCategoryNeeds(apiKey, cat) {
+  async function fetchActiveCrimes(apiKey) {
     const activeNeeds  = new Map(); // userID -> Set<itemID>
     const rawItemNeeds = new Map(); // itemID -> Set<userID> (items not yet held by member)
     await fetchPaginatedTorn(
-      `https://api.torn.com/v2/faction/crimes?key=${apiKey}&cat=${cat}`,
+      `https://api.torn.com/v2/faction/crimes?key=${apiKey}&cat=planning`,
       "crimes",
       (crimes) => {
         for (const crime of crimes) {
@@ -193,13 +193,8 @@
         }
       }
     );
+    log(`${activeNeeds.size} members with active OC item needs`);
     return { activeNeeds, rawItemNeeds };
-  }
-
-  async function fetchActiveCrimes(apiKey) {
-    const result = await fetchCategoryNeeds(apiKey, "planning");
-    log(`${result.activeNeeds.size} members with active OC item needs`);
-    return result;
   }
 
   async function fetchMemberNames(apiKey) {
