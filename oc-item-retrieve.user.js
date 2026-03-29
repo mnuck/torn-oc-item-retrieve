@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Item Retrieve Highlighter
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
-// @version      1.5.2
+// @version      1.5.3
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -38,6 +38,8 @@
     [1203, "Lockpicks"],
     [1217, "Shaving Foam"],
     [1258, "Binoculars"],
+    [1259, "Razor Wire"],
+    [1277, "Floor Cleaner"],
     [1331, "Hand Drill"],
     [1350, "Police Badge"],
     [1361, "Dog Treats"],
@@ -49,6 +51,7 @@
     [1429, "Zip Ties"],
     [1430, "Shaped Charge"],
     [1431, "Core Drill"],
+    [1509, "Angle Grinder"],
   ]);
 
   const STYLE_ID       = "oc-retrieve-highlighter-style";
