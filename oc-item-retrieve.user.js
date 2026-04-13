@@ -3,7 +3,7 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.5.4
+// @version      1.5.5
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -55,6 +55,8 @@
     [1430, "Shaped Charge"],
     [1431, "Core Drill"],
     [1509, "Angle Grinder"],
+    [1096, "Cell Phone"],
+    [1313, "Cassock"],
   ]);
 
   const STYLE_ID       = "oc-retrieve-highlighter-style";
