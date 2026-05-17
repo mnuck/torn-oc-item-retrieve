@@ -90,11 +90,8 @@
         padding: 1px 4px !important;
         text-shadow: 0 0 4px rgba(76, 175, 80, 0.4) !important;
       }
-      .oc-loan-target {
-        color: #4caf50;
-        font-size: 0.85em;
-        margin-left: 4px;
-        font-style: italic;
+      .oc-retrieve-ready[title] {
+        cursor: help;
       }
       #oc-missing-items-panel {
         background: #1a1a2e;
@@ -364,11 +361,7 @@
       loanBtn.dataset.ocHandled = "1";
       stats.loanSuggested++;
 
-      const tag = document.createElement("span");
-      tag.className   = "oc-loan-target";
-      tag.textContent = " → " + needers.map(n => n.name).join(", ");
-      loanBtn.insertAdjacentElement("afterend", tag);
-
+      loanBtn.title = "Loan to: " + needers.map(n => n.name).join(", ");
       loanBtn.addEventListener("click", makeLoanClickHandler(row, itemId, first, loanBtn), { once: true });
 
       dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan button set up for: ${needers.map(n => n.name).join(", ")}`);
@@ -478,8 +471,10 @@
   // ─── Markers ──────────────────────────────────────────────────────────────────
 
   function clearMarkers() {
-    document.querySelectorAll(".oc-retrieve-ready").forEach(el => el.classList.remove("oc-retrieve-ready"));
-    document.querySelectorAll(".oc-loan-target").forEach(el => el.remove());
+    document.querySelectorAll(".oc-retrieve-ready").forEach(el => {
+      el.classList.remove("oc-retrieve-ready");
+      el.removeAttribute("title");
+    });
     document.getElementById("oc-missing-items-panel")?.remove();
     document.getElementById("oc-no-data-notice")?.remove();
     // Clear per-element handler flags so next scan re-attaches cleanly
