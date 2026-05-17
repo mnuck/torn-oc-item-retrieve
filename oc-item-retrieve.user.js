@@ -3,7 +3,7 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.6.2
+// @version      1.6.3
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -320,9 +320,21 @@
   function makeLoanClickHandler(row, itemId, first, loanBtn) {
     return function () {
       loanBtn.classList.remove("oc-retrieve-ready");
-      row.querySelector(".oc-loan-target")?.remove();
+      delete loanBtn.dataset.ocTooltip;
       row.dataset.ocLoanSubmitted = "1";
       log(`loan clicked — item: ${OC_ITEMS.get(itemId)} (${itemId}), filling for ${first.name} [${first.id}]`);
+
+      // Remove this user from itemNeedsMap so other rows for the same item
+      // stop glowing — the need is now satisfied.
+      if (_itemNeedsMap && _itemNeedsMap.has(itemId)) {
+        const remaining = _itemNeedsMap.get(itemId).filter(n => n.id !== first.id);
+        if (remaining.length === 0) {
+          _itemNeedsMap.delete(itemId);
+        } else {
+          _itemNeedsMap.set(itemId, remaining);
+        }
+        debouncedScan(_activeNeeds, _itemNeedsMap);
+      }
 
       const fillForm = function () {
         // Find the visible autocomplete input in this row (non-zero width)
