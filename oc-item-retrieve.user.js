@@ -148,9 +148,12 @@
   }
 
   // Reads planning crime data directly from React fiber props.
-  // Returns { activeNeeds, itemNeedsMap, itemNames } or null if no planning crimes found.
+  // Captures any crime wrapper that has slots with both a player and an item requirement,
+  // regardless of planning state class — some fully-filled crimes lack the planning___c_GFN
+  // class until they begin executing.
+  // Returns { activeNeeds, itemNeedsMap, itemNames } or null if no relevant crimes found.
   function scrapePlanningCrimes() {
-    const planningEls = [...document.querySelectorAll(".wrapper___tgDjk.planning___c_GFN")];
+    const planningEls = [...document.querySelectorAll(".wrapper___tgDjk")];
     if (planningEls.length === 0) return null;
 
     const activeNeeds  = new Map(); // userId -> Set<itemId>
