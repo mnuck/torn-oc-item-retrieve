@@ -3,15 +3,13 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.5.5
+// @version      1.6.1
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
 // @match        https://www.torn.com/factions.php*
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_xmlhttpRequest
-// @connect      api.torn.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -20,6 +18,7 @@
 
   // Items discovered from faction completed crimes history.
   // Map of item ID -> item name for all items that appear as OC slot requirements.
+  // Also updated dynamically from scraped planning crimes data.
   const OC_ITEMS = new Map([
     [70,   "Polymorphic Virus"],
     [71,   "Tunneling Virus"],
@@ -61,12 +60,15 @@
 
   const STYLE_ID       = "oc-retrieve-highlighter-style";
   const ARMORY_ROW_SEL = "li:has(div.img-wrap[data-itemid])";
+  const CACHE_KEY      = "ocScrapedData";
 
   // Runtime state — populated after init, exposed on window.OCItemRetrieve
-  let _activeNeeds  = null;  // Map<userId, Set<itemId>>
-  let _itemNeedsMap = null;  // Map<itemId, Array<{id, name}>>
-  let _debug        = false;
-  let _initialized  = false;
+  let _activeNeeds       = null;  // Map<userId, Set<itemId>>
+  let _itemNeedsMap      = null;  // Map<itemId, Array<{id, name}>>
+  let _seenArmoryItems   = new Set(); // OC item IDs observed available in armory this session
+  let _debug             = false;
+  let _armoryInitialized = false;
+  let _scraperStarted    = false;
 
   // ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -122,155 +124,144 @@
       #oc-missing-items-panel li a:hover {
         text-decoration: underline;
       }
+      #oc-no-data-notice {
+        background: #1a1a2e;
+        border: 1px solid #f39c12;
+        border-radius: 4px;
+        padding: 8px 12px;
+        margin-bottom: 10px;
+        font-size: 0.9em;
+        color: #f0f0f0;
+      }
+      #oc-no-data-notice a {
+        color: #f39c12;
+      }
     `;
     document.head.appendChild(style);
     log("styles injected");
   }
 
-  // ─── API Key ──────────────────────────────────────────────────────────────────
-
-  function getApiKey() {
-    let key = GM_getValue("tornApiKey", "");
-    if (!key) {
-      key = prompt("Torn OC Item Retrieve Highlighter\n\nEnter your Torn API key (needs faction access):");
-      if (key) {
-        GM_setValue("tornApiKey", key.trim());
-        log("API key saved");
-      }
-    }
-    return key ? key.trim() : null;
-  }
-
-  // ─── API ──────────────────────────────────────────────────────────────────────
-
-  function tornApiGet(url) {
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: "GET",
-        url,
-        onload: (response) => {
-          try {
-            const data = JSON.parse(response.responseText);
-            if (data.error) reject(new Error(`API error: ${JSON.stringify(data.error)}`));
-            else resolve(data);
-          } catch (e) {
-            reject(new Error(`JSON parse error: ${e.message}`));
-          }
-        },
-        onerror: (err) => reject(new Error(`Request failed: ${err.statusText}`)),
-      });
-    });
-  }
+  // ─── Scrape ───────────────────────────────────────────────────────────────────
 
   function setAdd(map, key, value) {
     if (!map.has(key)) map.set(key, new Set());
     map.get(key).add(value);
   }
 
-  async function fetchPaginatedTorn(baseUrl, key, callback) {
-    let offset = 0;
-    while (true) {
-      const url   = `${baseUrl}&limit=100&offset=${offset}`;
-      const data  = await tornApiGet(url);
-      const items = data[key] || [];
-      if (items.length === 0) break;
-      callback(items);
-      offset += items.length;
-      const total = data._metadata?.total || 0;
-      if (total > 0 && offset >= total) break;
-      if (items.length < 100) break;
-    }
-  }
+  // Reads planning crime data directly from React fiber props.
+  // Captures any crime wrapper that has slots with both a player and an item requirement,
+  // regardless of planning state class — some fully-filled crimes lack the planning___c_GFN
+  // class until they begin executing.
+  // Returns { activeNeeds, itemNeedsMap, itemNames } or null if no relevant crimes found.
+  function scrapePlanningCrimes() {
+    const planningEls = [...document.querySelectorAll(".wrapper___tgDjk")];
+    if (planningEls.length === 0) return null;
 
-  async function fetchActiveCrimes(apiKey) {
-    const activeNeeds  = new Map(); // userID -> Set<itemID>
-    const rawItemNeeds = new Map(); // itemID -> Set<userID> (items not yet held by member)
-    await fetchPaginatedTorn(
-      `https://api.torn.com/v2/faction/crimes?key=${apiKey}&cat=planning`,
-      "crimes",
-      (crimes) => {
-        for (const crime of crimes) {
-          for (const slot of crime.slots || []) {
-            const itemReq = slot.item_requirement;
-            const user    = slot.user;
-            if (!itemReq?.id || !user?.id) continue;
-            setAdd(activeNeeds, user.id, itemReq.id);
-            if (itemReq.is_available !== false) continue;
-            setAdd(rawItemNeeds, itemReq.id, user.id);
+    const activeNeeds  = new Map(); // userId -> Set<itemId>  (all assigned slots)
+    const itemNeedsMap = new Map(); // itemId -> Array<{id, name}>  (doesExist:false only)
+    const itemNames    = new Map(); // itemId -> item name
+
+    for (const el of planningEls) {
+      const fiberKey = Object.keys(el).find(k => k.startsWith("__reactFiber"));
+      if (!fiberKey) continue;
+      const crime = el[fiberKey]?.return?.memoizedProps?.crime;
+      if (!crime?.playerSlots) continue;
+
+      for (const slot of crime.playerSlots) {
+        const userId    = slot.player?.ID    != null ? Number(slot.player.ID)           : null;
+        const itemId    = slot.requirement?.id != null ? Number(slot.requirement.id)    : null;
+        const userName  = slot.player?.name;
+        const itemName  = slot.requirement?.name;
+        const doesExist = slot.requirement?.doesExist;
+        if (!userId || !itemId) continue;
+
+        setAdd(activeNeeds, userId, itemId);
+
+        if (itemName) {
+          itemNames.set(itemId, itemName);
+          if (!OC_ITEMS.has(itemId)) OC_ITEMS.set(itemId, itemName);
+        }
+
+        // Only track as a need-to-source if the member doesn't already have the item
+        if (doesExist === false) {
+          if (!itemNeedsMap.has(itemId)) itemNeedsMap.set(itemId, []);
+          const needers = itemNeedsMap.get(itemId);
+          if (!needers.some(n => n.id === userId)) {
+            needers.push({ id: userId, name: userName || `User ${userId}` });
           }
         }
       }
-    );
-    log(`${activeNeeds.size} members with active OC item needs`);
-    return { activeNeeds, rawItemNeeds };
+    }
+
+    return { activeNeeds, itemNeedsMap, itemNames };
   }
 
-  async function fetchMemberNames(apiKey) {
-    const memberNames = new Map(); // userID -> name
-    await fetchPaginatedTorn(
-      `https://api.torn.com/v2/faction/members?key=${apiKey}`,
-      "members",
-      (members) => {
-        for (const member of members) {
-          if (member.id && member.name) memberNames.set(member.id, member.name);
-        }
+  // ─── Cache ────────────────────────────────────────────────────────────────────
+
+  function saveScrapedData(activeNeeds, itemNeedsMap, itemNames) {
+    const data = {
+      activeNeeds:  [...activeNeeds].map(([uid, items]) => [uid, [...items]]),
+      itemNeedsMap: [...itemNeedsMap].map(([itemId, needers]) => [itemId, needers]),
+      itemNames:    [...itemNames],
+      scrapedAt:    Date.now(),
+    };
+    GM_setValue(CACHE_KEY, JSON.stringify(data));
+    log(`saved data: ${activeNeeds.size} members with active OC item needs`);
+  }
+
+  function loadScrapedData() {
+    const raw = GM_getValue(CACHE_KEY, null);
+    if (!raw) return null;
+    try {
+      const data        = JSON.parse(raw);
+      const activeNeeds  = new Map(data.activeNeeds.map(([uid, items]) => [Number(uid), new Set(items.map(Number))]));
+      const itemNeedsMap = new Map(data.itemNeedsMap.map(([id, needers]) => [Number(id), needers]));
+      // Restore scraped item names not already in OC_ITEMS
+      for (const [id, name] of data.itemNames || []) {
+        if (!OC_ITEMS.has(Number(id))) OC_ITEMS.set(Number(id), name);
       }
-    );
-    log(`${memberNames.size} faction members loaded`);
-    return memberNames;
+      return { activeNeeds, itemNeedsMap, scrapedAt: data.scrapedAt };
+    } catch (e) {
+      log("failed to parse cached data:", e.message);
+      return null;
+    }
   }
 
-  function buildItemNeedsMap(rawItemNeeds, memberNames) {
-    const map = new Map();
-    for (const [itemId, userIds] of rawItemNeeds) {
-      map.set(itemId, [...userIds].map(id => ({
-        id,
-        name: memberNames.get(id) || `User ${id}`,
-      })));
+  // ─── Crimes Page ──────────────────────────────────────────────────────────────
+
+  function startCrimesScraper() {
+    if (_scraperStarted) return;
+    _scraperStarted = true;
+    log("crimes page — watching for planning crimes");
+
+    let scrapeTimeout = null;
+    function debouncedScrape() {
+      if (scrapeTimeout) clearTimeout(scrapeTimeout);
+      scrapeTimeout = setTimeout(() => {
+        const result = scrapePlanningCrimes();
+        if (!result) return;
+        const { activeNeeds, itemNeedsMap, itemNames } = result;
+        saveScrapedData(activeNeeds, itemNeedsMap, itemNames);
+        _activeNeeds  = activeNeeds;
+        _itemNeedsMap = itemNeedsMap;
+      }, 500);
     }
-    return map;
+
+    const observer = new MutationObserver(debouncedScrape);
+    observer.observe(document.body, { childList: true, subtree: true });
+    debouncedScrape();
   }
 
-  // ─── Missing Items Panel ──────────────────────────────────────────────────────
-
-  function renderMissingItemsPanel(missingItems) {
-    const newKey   = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
-    const existing = document.getElementById("oc-missing-items-panel");
-
-    // Skip DOM write if content unchanged — prevents MutationObserver re-trigger
-    if (existing && existing.dataset.missingIds === newKey) return;
-
-    if (missingItems.length === 0) {
-      if (existing) existing.remove();
-      return;
-    }
-
+  function renderNoDataNotice() {
+    if (document.getElementById("oc-no-data-notice")) return;
     const firstRow     = document.querySelector(ARMORY_ROW_SEL);
     const insertTarget = firstRow ? firstRow.closest("ul") : null;
+    if (!insertTarget) return;
 
-    // No existing panel and no insertion point yet — armory list hasn't loaded;
-    // the MutationObserver will trigger another scan once items appear.
-    if (!existing && !insertTarget) {
-      dbg("renderMissingItemsPanel: armory list not yet in DOM, will retry on next scan");
-      return;
-    }
-
-    const panel = existing || document.createElement("div");
-    panel.id = "oc-missing-items-panel";
-    panel.dataset.missingIds = newKey;
-
-    const itemList = missingItems.map(m => {
-      const count = m.needers.length;
-      const noun  = count === 1 ? "person needs" : "people need";
-      const url   = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(m.name)}`;
-      return `<li><a href="${url}" target="_blank">${m.name}</a> — ${count} ${noun} it</li>`;
-    }).join("");
-
-    panel.innerHTML = `<h4>⚠ Missing Items — Need to Purchase</h4><ul>${itemList}</ul>`;
-
-    if (!existing) {
-      insertTarget.insertAdjacentElement("beforebegin", panel);
-    }
+    const notice = document.createElement("div");
+    notice.id = "oc-no-data-notice";
+    notice.innerHTML = `OC Retrieve: visit the <a href="/factions.php?step=your&type=1#/tab=crimes">Planning Crimes tab</a> first to enable highlighting.`;
+    insertTarget.insertAdjacentElement("beforebegin", notice);
   }
 
   // ─── Scan ─────────────────────────────────────────────────────────────────────
@@ -375,7 +366,7 @@
 
       const tag = document.createElement("span");
       tag.className   = "oc-loan-target";
-      tag.textContent = " \u2192 " + needers.map(n => n.name).join(", ");
+      tag.textContent = " → " + needers.map(n => n.name).join(", ");
       loanBtn.insertAdjacentElement("afterend", tag);
 
       loanBtn.addEventListener("click", makeLoanClickHandler(row, itemId, first, loanBtn), { once: true });
@@ -412,6 +403,36 @@
     }
   }
 
+  function renderMissingItemsPanel(missingItems) {
+    const newKey   = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
+    const existing = document.getElementById("oc-missing-items-panel");
+
+    if (existing && existing.dataset.missingIds === newKey) return;
+
+    if (missingItems.length === 0) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const firstRow     = document.querySelector(ARMORY_ROW_SEL);
+    const insertTarget = firstRow ? firstRow.closest("ul") : null;
+    if (!existing && !insertTarget) return;
+
+    const panel = existing || document.createElement("div");
+    panel.id = "oc-missing-items-panel";
+    panel.dataset.missingIds = newKey;
+
+    const itemList = missingItems.map(m => {
+      const count = m.needers.length;
+      const noun  = count === 1 ? "person needs" : "people need";
+      const url   = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(m.name)}`;
+      return `<li><a href="${url}" target="_blank">${m.name}</a> — ${count} ${noun} it</li>`;
+    }).join("");
+
+    panel.innerHTML = `<h4>⚠ Missing Items — Need to Purchase</h4><ul>${itemList}</ul>`;
+    if (!existing) insertTarget.insertAdjacentElement("beforebegin", panel);
+  }
+
   // Coordinator: classifies each armory row and routes it to the appropriate
   // processor. Updates the missing items panel and logs aggregate stats.
   function scanArmoryRows(activeNeeds, itemNeedsMap) {
@@ -429,6 +450,7 @@
       if (itemId === null) continue;
 
       inArmoryItems.add(itemId);
+      _seenArmoryItems.add(itemId);
 
       const userId = getRowLoanedUserId(row);
       if (userId === null) {
@@ -439,10 +461,9 @@
       }
     }
 
-    // Panel: items needed by OC members that the faction has no stock of
     if (itemNeedsMap) {
       const missingItems = [...itemNeedsMap.entries()]
-        .filter(([id]) => !inArmoryItems.has(id))
+        .filter(([id]) => !_seenArmoryItems.has(id))
         .map(([id, needers]) => ({ id, name: OC_ITEMS.get(id) || `Item ${id}`, needers }))
         .sort((a, b) => a.name.localeCompare(b.name));
       renderMissingItemsPanel(missingItems);
@@ -460,8 +481,10 @@
     document.querySelectorAll(".oc-retrieve-ready").forEach(el => el.classList.remove("oc-retrieve-ready"));
     document.querySelectorAll(".oc-loan-target").forEach(el => el.remove());
     document.getElementById("oc-missing-items-panel")?.remove();
+    document.getElementById("oc-no-data-notice")?.remove();
     // Clear per-element handler flags so next scan re-attaches cleanly
     document.querySelectorAll("[data-oc-handled]").forEach(el => delete el.dataset.ocHandled);
+    _seenArmoryItems = new Set();
     // Intentionally NOT clearing data-oc-loan-submitted — already-loaned rows
     // stay suppressed across tab navigation.
   }
@@ -474,44 +497,35 @@
     scanTimeout = setTimeout(() => scanArmoryRows(activeNeeds, itemNeedsMap), 500);
   }
 
-  // ─── Main ─────────────────────────────────────────────────────────────────────
+  // ─── Armory Page ──────────────────────────────────────────────────────────────
 
-  async function main() {
-    if (!window.location.hash.includes("armoury")) {
-      const onHash = () => {
-        if (window.location.hash.includes("armoury")) {
-          window.removeEventListener("hashchange", onHash);
-          main();
-        }
-      };
-      window.addEventListener("hashchange", onHash);
+  function initArmory() {
+    if (_armoryInitialized) return;
+    _armoryInitialized = true;
+
+    log("armory page detected");
+
+    const cached = loadScrapedData();
+    if (!cached) {
+      log("no scraped data — visit the Planning Crimes tab first to enable highlighting");
+
+      // Watch for the armory list to appear so we can insert the notice
+      const noticeObserver = new MutationObserver(renderNoDataNotice);
+      noticeObserver.observe(document.body, { childList: true, subtree: true });
+      renderNoDataNotice();
       return;
     }
 
-    if (_initialized) return;
-    _initialized = true;
-
-    log("starting");
-    injectStyles();
-
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      console.error("❌ OC Retrieve: no API key, aborting");
-      return;
+    const ageMinutes = Math.round((Date.now() - cached.scrapedAt) / 60000);
+    if (ageMinutes > 120) {
+      log(`warning: scraped data is ${ageMinutes} minutes old — consider revisiting the Planning Crimes tab`);
+    } else {
+      log(`loaded data (${ageMinutes}m old) for ${cached.activeNeeds.size} members with active OC item needs`);
     }
 
-    let rawItemNeeds, memberNames;
-    try {
-      [{ activeNeeds: _activeNeeds, rawItemNeeds }, memberNames] = await Promise.all([
-        fetchActiveCrimes(apiKey),
-        fetchMemberNames(apiKey),
-      ]);
-    } catch (err) {
-      console.error("❌ OC Retrieve: failed to fetch data:", err);
-      return;
-    }
-
-    _itemNeedsMap = buildItemNeedsMap(rawItemNeeds, memberNames);
+    _activeNeeds     = cached.activeNeeds;
+    _itemNeedsMap    = cached.itemNeedsMap;
+    _seenArmoryItems = new Set();
 
     scanArmoryRows(_activeNeeds, _itemNeedsMap);
 
@@ -528,13 +542,31 @@
     log("watching for DOM changes");
   }
 
+  // ─── Main ─────────────────────────────────────────────────────────────────────
+
+  function main() {
+    injectStyles();
+
+    function onHashChange() {
+      const hash = window.location.hash;
+      if (hash.includes("tab=crimes")) {
+        startCrimesScraper();
+      } else if (hash.includes("armoury")) {
+        initArmory();
+      }
+    }
+
+    window.addEventListener("hashchange", onHashChange);
+    onHashChange();
+  }
+
   // ─── Debug Surface ────────────────────────────────────────────────────────────
 
   window.OCItemRetrieve = {
-    // Static data
+    // Static + dynamically extended item map
     OC_ITEMS,
 
-    // Live API data (available after page load completes)
+    // Live data (available after scraping or loading from cache)
     get activeNeeds()  { return _activeNeeds; },
     get itemNeedsMap() { return _itemNeedsMap; },
 
@@ -620,11 +652,10 @@
       console.groupEnd();
     },
 
-    // Low-level helpers for manual re-fetch from console
-    getApiKey,
-    fetchActiveCrimes,
-    fetchMemberNames,
-    buildItemNeedsMap,
+    // Low-level helpers for manual use from console
+    scrapePlanningCrimes,
+    saveScrapedData,
+    loadScrapedData,
     clearMarkers,
   };
 
