@@ -3,7 +3,7 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.6.1
+// @version      1.6.2
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -87,11 +87,31 @@
         border-radius: 3px !important;
         box-shadow: 0 0 8px 2px rgba(76, 175, 80, 0.6) !important;
         color: #4caf50 !important;
-        padding: 1px 4px !important;
         text-shadow: 0 0 4px rgba(76, 175, 80, 0.4) !important;
       }
-      .oc-retrieve-ready[title] {
-        cursor: help;
+      [data-oc-tooltip] {
+        position: relative;
+      }
+      [data-oc-tooltip]::after {
+        content: attr(data-oc-tooltip);
+        position: absolute;
+        bottom: calc(100% + 6px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1a1a2e;
+        color: #4caf50;
+        border: 1px solid #4caf50;
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 0.8em;
+        white-space: nowrap;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.15s;
+        z-index: 9999;
+      }
+      [data-oc-tooltip]:hover::after {
+        opacity: 1;
       }
       #oc-missing-items-panel {
         background: #1a1a2e;
@@ -361,7 +381,7 @@
       loanBtn.dataset.ocHandled = "1";
       stats.loanSuggested++;
 
-      loanBtn.title = "Loan to: " + needers.map(n => n.name).join(", ");
+      loanBtn.dataset.ocTooltip = "Loan to: " + needers.map(n => n.name).join(", ");
       loanBtn.addEventListener("click", makeLoanClickHandler(row, itemId, first, loanBtn), { once: true });
 
       dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan button set up for: ${needers.map(n => n.name).join(", ")}`);
@@ -473,7 +493,7 @@
   function clearMarkers() {
     document.querySelectorAll(".oc-retrieve-ready").forEach(el => {
       el.classList.remove("oc-retrieve-ready");
-      el.removeAttribute("title");
+      delete el.dataset.ocTooltip;
     });
     document.getElementById("oc-missing-items-panel")?.remove();
     document.getElementById("oc-no-data-notice")?.remove();
