@@ -168,8 +168,8 @@
       if (!crime?.playerSlots) continue;
 
       for (const slot of crime.playerSlots) {
-        const userId    = slot.player?.ID;
-        const itemId    = slot.requirement?.id;
+        const userId    = slot.player?.ID    != null ? Number(slot.player.ID)           : null;
+        const itemId    = slot.requirement?.id != null ? Number(slot.requirement.id)    : null;
         const userName  = slot.player?.name;
         const itemName  = slot.requirement?.name;
         const doesExist = slot.requirement?.doesExist;
@@ -214,11 +214,11 @@
     if (!raw) return null;
     try {
       const data        = JSON.parse(raw);
-      const activeNeeds = new Map(data.activeNeeds.map(([uid, items]) => [uid, new Set(items)]));
-      const itemNeedsMap = new Map(data.itemNeedsMap);
+      const activeNeeds  = new Map(data.activeNeeds.map(([uid, items]) => [Number(uid), new Set(items.map(Number))]));
+      const itemNeedsMap = new Map(data.itemNeedsMap.map(([id, needers]) => [Number(id), needers]));
       // Restore scraped item names not already in OC_ITEMS
       for (const [id, name] of data.itemNames || []) {
-        if (!OC_ITEMS.has(id)) OC_ITEMS.set(id, name);
+        if (!OC_ITEMS.has(Number(id))) OC_ITEMS.set(Number(id), name);
       }
       return { activeNeeds, itemNeedsMap, scrapedAt: data.scrapedAt };
     } catch (e) {
