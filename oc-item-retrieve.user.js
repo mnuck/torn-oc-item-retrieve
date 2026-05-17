@@ -65,6 +65,7 @@
   // Runtime state — populated after init, exposed on window.OCItemRetrieve
   let _activeNeeds       = null;  // Map<userId, Set<itemId>>
   let _itemNeedsMap      = null;  // Map<itemId, Array<{id, name}>>
+  let _seenArmoryItems   = new Set(); // OC item IDs observed available in armory this session
   let _debug             = false;
   let _armoryInitialized = false;
   let _scraperStarted    = false;
@@ -449,6 +450,7 @@
       if (itemId === null) continue;
 
       inArmoryItems.add(itemId);
+      _seenArmoryItems.add(itemId);
 
       const userId = getRowLoanedUserId(row);
       if (userId === null) {
@@ -461,7 +463,7 @@
 
     if (itemNeedsMap) {
       const missingItems = [...itemNeedsMap.entries()]
-        .filter(([id]) => !inArmoryItems.has(id))
+        .filter(([id]) => !_seenArmoryItems.has(id))
         .map(([id, needers]) => ({ id, name: OC_ITEMS.get(id) || `Item ${id}`, needers }))
         .sort((a, b) => a.name.localeCompare(b.name));
       renderMissingItemsPanel(missingItems);
@@ -482,6 +484,7 @@
     document.getElementById("oc-no-data-notice")?.remove();
     // Clear per-element handler flags so next scan re-attaches cleanly
     document.querySelectorAll("[data-oc-handled]").forEach(el => delete el.dataset.ocHandled);
+    _seenArmoryItems = new Set();
     // Intentionally NOT clearing data-oc-loan-submitted — already-loaned rows
     // stay suppressed across tab navigation.
   }
@@ -520,8 +523,9 @@
       log(`loaded data (${ageMinutes}m old) for ${cached.activeNeeds.size} members with active OC item needs`);
     }
 
-    _activeNeeds  = cached.activeNeeds;
-    _itemNeedsMap = cached.itemNeedsMap;
+    _activeNeeds     = cached.activeNeeds;
+    _itemNeedsMap    = cached.itemNeedsMap;
+    _seenArmoryItems = new Set();
 
     scanArmoryRows(_activeNeeds, _itemNeedsMap);
 
