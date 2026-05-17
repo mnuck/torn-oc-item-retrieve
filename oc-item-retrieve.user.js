@@ -95,7 +95,35 @@
         margin-left: 4px;
         font-style: italic;
       }
-#oc-no-data-notice {
+      #oc-missing-items-panel {
+        background: #1a1a2e;
+        border: 1px solid #e74c3c;
+        border-radius: 4px;
+        padding: 8px 12px;
+        margin-bottom: 10px;
+        font-size: 0.9em;
+      }
+      #oc-missing-items-panel h4 {
+        color: #e74c3c;
+        margin: 0 0 6px 0;
+        font-size: 1em;
+      }
+      #oc-missing-items-panel ul {
+        margin: 0;
+        padding: 0 0 0 16px;
+      }
+      #oc-missing-items-panel li {
+        color: #f0f0f0;
+        margin: 2px 0;
+      }
+      #oc-missing-items-panel li a {
+        color: #e74c3c;
+        text-decoration: none;
+      }
+      #oc-missing-items-panel li a:hover {
+        text-decoration: underline;
+      }
+      #oc-no-data-notice {
         background: #1a1a2e;
         border: 1px solid #f39c12;
         border-radius: 4px;
@@ -128,8 +156,8 @@
     const planningEls = [...document.querySelectorAll(".wrapper___tgDjk")];
     if (planningEls.length === 0) return null;
 
-    const activeNeeds  = new Map(); // userId -> Set<itemId>
-    const itemNeedsMap = new Map(); // itemId -> Array<{id, name}>
+    const activeNeeds  = new Map(); // userId -> Set<itemId>  (all assigned slots)
+    const itemNeedsMap = new Map(); // itemId -> Array<{id, name}>  (doesExist:false only)
     const itemNames    = new Map(); // itemId -> item name
 
     for (const el of planningEls) {
@@ -139,24 +167,27 @@
       if (!crime?.playerSlots) continue;
 
       for (const slot of crime.playerSlots) {
-        const userId   = slot.player?.ID;
-        const itemId   = slot.requirement?.id;
-        const userName = slot.player?.name;
-        const itemName = slot.requirement?.name;
+        const userId    = slot.player?.ID;
+        const itemId    = slot.requirement?.id;
+        const userName  = slot.player?.name;
+        const itemName  = slot.requirement?.name;
+        const doesExist = slot.requirement?.doesExist;
         if (!userId || !itemId) continue;
 
         setAdd(activeNeeds, userId, itemId);
 
         if (itemName) {
           itemNames.set(itemId, itemName);
-          // Extend OC_ITEMS so the armory filter recognises newly discovered items
           if (!OC_ITEMS.has(itemId)) OC_ITEMS.set(itemId, itemName);
         }
 
-        if (!itemNeedsMap.has(itemId)) itemNeedsMap.set(itemId, []);
-        const needers = itemNeedsMap.get(itemId);
-        if (!needers.some(n => n.id === userId)) {
-          needers.push({ id: userId, name: userName || `User ${userId}` });
+        // Only track as a need-to-source if the member doesn't already have the item
+        if (doesExist === false) {
+          if (!itemNeedsMap.has(itemId)) itemNeedsMap.set(itemId, []);
+          const needers = itemNeedsMap.get(itemId);
+          if (!needers.some(n => n.id === userId)) {
+            needers.push({ id: userId, name: userName || `User ${userId}` });
+          }
         }
       }
     }
@@ -371,11 +402,42 @@
     }
   }
 
+  function renderMissingItemsPanel(missingItems) {
+    const newKey   = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
+    const existing = document.getElementById("oc-missing-items-panel");
+
+    if (existing && existing.dataset.missingIds === newKey) return;
+
+    if (missingItems.length === 0) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const firstRow     = document.querySelector(ARMORY_ROW_SEL);
+    const insertTarget = firstRow ? firstRow.closest("ul") : null;
+    if (!existing && !insertTarget) return;
+
+    const panel = existing || document.createElement("div");
+    panel.id = "oc-missing-items-panel";
+    panel.dataset.missingIds = newKey;
+
+    const itemList = missingItems.map(m => {
+      const count = m.needers.length;
+      const noun  = count === 1 ? "person needs" : "people need";
+      const url   = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(m.name)}`;
+      return `<li><a href="${url}" target="_blank">${m.name}</a> — ${count} ${noun} it</li>`;
+    }).join("");
+
+    panel.innerHTML = `<h4>⚠ Missing Items — Need to Purchase</h4><ul>${itemList}</ul>`;
+    if (!existing) insertTarget.insertAdjacentElement("beforebegin", panel);
+  }
+
   // Coordinator: classifies each armory row and routes it to the appropriate
   // processor. Updates the missing items panel and logs aggregate stats.
   function scanArmoryRows(activeNeeds, itemNeedsMap) {
-    const rows  = document.querySelectorAll(ARMORY_ROW_SEL);
-    const stats = { checked: 0, highlighted: 0, loanSuggested: 0 };
+    const rows          = document.querySelectorAll(ARMORY_ROW_SEL);
+    const inArmoryItems = new Set();
+    const stats         = { checked: 0, highlighted: 0, loanSuggested: 0 };
 
     for (const row of rows) {
       if (row.dataset.ocLoanSubmitted) {
@@ -386,6 +448,8 @@
       const itemId = getRowItemId(row);
       if (itemId === null) continue;
 
+      inArmoryItems.add(itemId);
+
       const userId = getRowLoanedUserId(row);
       if (userId === null) {
         const loanBtn = row.querySelector("a.loan.active[data-role='loan']");
@@ -393,6 +457,14 @@
       } else {
         processLoanedRow(row, itemId, userId, activeNeeds, stats);
       }
+    }
+
+    if (itemNeedsMap) {
+      const missingItems = [...itemNeedsMap.entries()]
+        .filter(([id]) => !inArmoryItems.has(id))
+        .map(([id, needers]) => ({ id, name: OC_ITEMS.get(id) || `Item ${id}`, needers }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      renderMissingItemsPanel(missingItems);
     }
 
     const { checked, highlighted, loanSuggested } = stats;
@@ -406,6 +478,7 @@
   function clearMarkers() {
     document.querySelectorAll(".oc-retrieve-ready").forEach(el => el.classList.remove("oc-retrieve-ready"));
     document.querySelectorAll(".oc-loan-target").forEach(el => el.remove());
+    document.getElementById("oc-missing-items-panel")?.remove();
     document.getElementById("oc-no-data-notice")?.remove();
     // Clear per-element handler flags so next scan re-attaches cleanly
     document.querySelectorAll("[data-oc-handled]").forEach(el => delete el.dataset.ocHandled);
