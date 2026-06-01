@@ -3,7 +3,7 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.6.3
+// @version      1.7.0
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -57,6 +57,18 @@
     [1096, "Cell Phone"],
     [1313, "Cassock"],
   ]);
+
+  // OC items that do NOT live in the Utilities tab. Maps item ID -> armory
+  // sub-tab id (the `sub=` value in the page hash). Anything not listed is
+  // assumed to be in Utilities. Used to cue the user to the right tab and to
+  // distinguish "available on another tab" from "truly missing — need to buy".
+  const OC_ITEM_OFFTAB = new Map([
+    [201, "drugs"],   // PCP
+    [643, "armour"],  // Construction Helmet
+  ]);
+
+  // Display labels for armory sub-tabs referenced by OC_ITEM_OFFTAB.
+  const SUBTAB_LABELS = { drugs: "Drugs", armour: "Armor" };
 
   const STYLE_ID       = "oc-retrieve-highlighter-style";
   const ARMORY_ROW_SEL = "li:has(div.img-wrap[data-itemid])";
@@ -140,6 +152,10 @@
       }
       #oc-missing-items-panel li a:hover {
         text-decoration: underline;
+      }
+      #oc-missing-items-panel li a.oc-tab-cue {
+        color: #f39c12;
+        font-weight: bold;
       }
       #oc-no-data-notice {
         background: #1a1a2e;
@@ -244,6 +260,20 @@
     }
   }
 
+  // Re-save the current in-memory needs to the cache. Used after a give is
+  // initiated so the change survives a page reload — otherwise the cache still
+  // lists a member who has already been handed their item, and the script keeps
+  // suggesting it. (Loans self-correct: the armory's Loaned column updates, so a
+  // re-scan sees the row as already loaned. Gives don't change that column.)
+  function persistNeeds() {
+    if (!_activeNeeds || !_itemNeedsMap) return;
+    const itemNames = new Map();
+    const collect = id => { const n = OC_ITEMS.get(id); if (n) itemNames.set(id, n); };
+    for (const items of _activeNeeds.values()) for (const id of items) collect(id);
+    for (const id of _itemNeedsMap.keys()) collect(id);
+    saveScrapedData(_activeNeeds, _itemNeedsMap, itemNames);
+  }
+
   // ─── Crimes Page ──────────────────────────────────────────────────────────────
 
   function startCrimesScraper() {
@@ -314,18 +344,24 @@
     return match ? parseInt(match[1], 10) : null;
   }
 
-  // Returns the click handler for a loan button.
+  // Returns the click handler for a loan or give button.
   // On click: removes glow/annotation, marks row as submitted, then fills the
   // autocomplete form with "Name [ID]" (the format Torn's form validation requires).
-  function makeLoanClickHandler(row, itemId, first, loanBtn) {
+  // For give (drugs, which can't be loaned), also sets the quantity field to 1 —
+  // an OC slot needs exactly one item. Note: Give transfers the item into the
+  // member's inventory permanently (not retrievable), unlike Loan.
+  function makeHandoutClickHandler(row, itemId, first, btn, mode) {
     return function () {
-      loanBtn.classList.remove("oc-retrieve-ready");
-      delete loanBtn.dataset.ocTooltip;
+      btn.classList.remove("oc-retrieve-ready");
+      delete btn.dataset.ocTooltip;
       row.dataset.ocLoanSubmitted = "1";
-      log(`loan clicked — item: ${OC_ITEMS.get(itemId)} (${itemId}), filling for ${first.name} [${first.id}]`);
+      log(`${mode} clicked — item: ${OC_ITEMS.get(itemId)} (${itemId}), filling for ${first.name} [${first.id}]`);
 
-      // Remove this user from itemNeedsMap so other rows for the same item
-      // stop glowing — the need is now satisfied.
+      // Remove this user from itemNeedsMap so other rows for the same item stop
+      // glowing — the need is now satisfied — then re-scan. For give, also
+      // persist the change: giving doesn't update the armory's Loaned column, so
+      // a reload would otherwise re-suggest giving to someone already handed
+      // their item. (Loans self-correct via the Loaned column, so aren't persisted.)
       if (_itemNeedsMap && _itemNeedsMap.has(itemId)) {
         const remaining = _itemNeedsMap.get(itemId).filter(n => n.id !== first.id);
         if (remaining.length === 0) {
@@ -333,6 +369,7 @@
         } else {
           _itemNeedsMap.set(itemId, remaining);
         }
+        if (mode === "give") persistNeeds();
         debouncedScan(_activeNeeds, _itemNeedsMap);
       }
 
@@ -368,6 +405,13 @@
           visibleInput.insertAdjacentElement("afterend", hiddenInput);
         }
         hiddenInput.value = fillValue;
+
+        // Give forms (drugs) include a quantity field; transfer one item.
+        if (mode === "give") {
+          for (const qty of row.querySelectorAll("input.quantity, input[name='quantity']")) {
+            qty.value = "1";
+          }
+        }
       };
 
       setTimeout(fillForm, 0);
@@ -375,30 +419,32 @@
     };
   }
 
-  // Handles an available row: glows the loan button and annotates it with
-  // the names of members who need this item. Increments stats.loanSuggested
-  // the first time the button is set up (data-oc-handled not yet set).
-  function processAvailableRow(row, itemId, itemNeedsMap, loanBtn, stats) {
-    if (!loanBtn || !itemNeedsMap || !itemNeedsMap.has(itemId)) {
-      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — available, no one needs a loan`);
+  // Handles an available row: glows the hand-out button (Loan for most items,
+  // Give for drugs which can't be loaned) and annotates it with the names of
+  // members who need this item. Increments stats.loanSuggested the first time
+  // the button is set up (data-oc-handled not yet set).
+  function processHandoutRow(row, itemId, itemNeedsMap, btn, stats, mode) {
+    if (!btn || !itemNeedsMap || !itemNeedsMap.has(itemId)) {
+      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — available, no one needs it`);
       return;
     }
 
     const needers = itemNeedsMap.get(itemId); // Array<{id, name}>
     const first   = needers[0];
 
-    loanBtn.classList.add("oc-retrieve-ready"); // idempotent
+    btn.classList.add("oc-retrieve-ready"); // idempotent
 
-    if (!loanBtn.dataset.ocHandled) {
-      loanBtn.dataset.ocHandled = "1";
+    if (!btn.dataset.ocHandled) {
+      btn.dataset.ocHandled = "1";
       stats.loanSuggested++;
 
-      loanBtn.dataset.ocTooltip = "Loan to: " + needers.map(n => n.name).join(", ");
-      loanBtn.addEventListener("click", makeLoanClickHandler(row, itemId, first, loanBtn), { once: true });
+      const verb = mode === "give" ? "Give to: " : "Loan to: ";
+      btn.dataset.ocTooltip = verb + needers.map(n => n.name).join(", ");
+      btn.addEventListener("click", makeHandoutClickHandler(row, itemId, first, btn, mode), { once: true });
 
-      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan button set up for: ${needers.map(n => n.name).join(", ")}`);
+      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — ${mode} button set up for: ${needers.map(n => n.name).join(", ")}`);
     } else {
-      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — loan handler already attached, glow reapplied`);
+      dbg(`itemId=${itemId} (${OC_ITEMS.get(itemId)}) — ${mode} handler already attached, glow reapplied`);
     }
   }
 
@@ -448,13 +494,22 @@
     panel.dataset.missingIds = newKey;
 
     const itemList = missingItems.map(m => {
-      const count = m.needers.length;
-      const noun  = count === 1 ? "person needs" : "people need";
-      const url   = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(m.name)}`;
+      const count   = m.needers.length;
+      const noun    = count === 1 ? "person needs" : "people need";
+      const offSub  = OC_ITEM_OFFTAB.get(m.id);
+      if (offSub) {
+        // Available on a different armory tab — cue the user there instead of
+        // sending them to the market. The link switches sub-tab via the page
+        // hash, which the armory hashchange listener picks up to re-scan.
+        const label = SUBTAB_LABELS[offSub] || offSub;
+        const href  = `#/tab=armoury&start=0&sub=${offSub}`;
+        return `<li>${m.name} — ${count} ${noun} it → <a href="${href}" class="oc-tab-cue">check the ${label} tab</a></li>`;
+      }
+      const url = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(m.name)}`;
       return `<li><a href="${url}" target="_blank">${m.name}</a> — ${count} ${noun} it</li>`;
     }).join("");
 
-    panel.innerHTML = `<h4>⚠ Missing Items — Need to Purchase</h4><ul>${itemList}</ul>`;
+    panel.innerHTML = `<h4>⚠ OC Items Needed</h4><ul>${itemList}</ul>`;
     if (!existing) insertTarget.insertAdjacentElement("beforebegin", panel);
   }
 
@@ -479,8 +534,16 @@
 
       const userId = getRowLoanedUserId(row);
       if (userId === null) {
+        // Prefer Loan (retrievable). Fall back to Give for items that can't be
+        // loaned — e.g. drugs like PCP. Give permanently transfers the item to
+        // the member's inventory; there's no retrieve.
         const loanBtn = row.querySelector("a.loan.active[data-role='loan']");
-        processAvailableRow(row, itemId, itemNeedsMap, loanBtn, stats);
+        if (loanBtn) {
+          processHandoutRow(row, itemId, itemNeedsMap, loanBtn, stats, "loan");
+        } else {
+          const giveBtn = row.querySelector("a.give.active[data-role='give']");
+          if (giveBtn) processHandoutRow(row, itemId, itemNeedsMap, giveBtn, stats, "give");
+        }
       } else {
         processLoanedRow(row, itemId, userId, activeNeeds, stats);
       }
