@@ -3,7 +3,7 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.7.0
+// @version      1.7.1
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -260,11 +260,10 @@
     }
   }
 
-  // Re-save the current in-memory needs to the cache. Used after a give is
-  // initiated so the change survives a page reload — otherwise the cache still
-  // lists a member who has already been handed their item, and the script keeps
-  // suggesting it. (Loans self-correct: the armory's Loaned column updates, so a
-  // re-scan sees the row as already loaned. Gives don't change that column.)
+  // Re-save the current in-memory needs to the cache. Used after a loan or give
+  // is initiated so the change survives a page reload — otherwise the cache
+  // still lists a member who has already been handed their item, and the script
+  // keeps suggesting it on any Available stack of that item.
   function persistNeeds() {
     if (!_activeNeeds || !_itemNeedsMap) return;
     const itemNames = new Map();
@@ -358,10 +357,11 @@
       log(`${mode} clicked — item: ${OC_ITEMS.get(itemId)} (${itemId}), filling for ${first.name} [${first.id}]`);
 
       // Remove this user from itemNeedsMap so other rows for the same item stop
-      // glowing — the need is now satisfied — then re-scan. For give, also
-      // persist the change: giving doesn't update the armory's Loaned column, so
-      // a reload would otherwise re-suggest giving to someone already handed
-      // their item. (Loans self-correct via the Loaned column, so aren't persisted.)
+      // glowing — the need is now satisfied — then re-scan, and persist so the
+      // change survives a reload. The armory's Loaned column only self-corrects
+      // the loaned row itself; a separate Available stack of the same item (e.g.
+      // a split stack) has no Loaned entry, so without persisting it would
+      // re-suggest handing the item to someone who already has it.
       if (_itemNeedsMap && _itemNeedsMap.has(itemId)) {
         const remaining = _itemNeedsMap.get(itemId).filter(n => n.id !== first.id);
         if (remaining.length === 0) {
@@ -369,7 +369,7 @@
         } else {
           _itemNeedsMap.set(itemId, remaining);
         }
-        if (mode === "give") persistNeeds();
+        persistNeeds();
         debouncedScan(_activeNeeds, _itemNeedsMap);
       }
 
