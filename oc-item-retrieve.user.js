@@ -3,7 +3,7 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.7.1
+// @version      1.7.2
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -475,7 +475,7 @@
   }
 
   function renderMissingItemsPanel(missingItems) {
-    const newKey   = missingItems.map(m => m.id).sort((a, b) => a - b).join(",");
+    const newKey   = missingItems.map(m => `${m.id}:${m.loanedCount || 0}`).sort().join(",");
     const existing = document.getElementById("oc-missing-items-panel");
 
     if (existing && existing.dataset.missingIds === newKey) return;
@@ -506,6 +506,15 @@
         return `<li>${m.name} — ${count} ${noun} it → <a href="${href}" class="oc-tab-cue">check the ${label} tab</a></li>`;
       }
       const url = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(m.name)}`;
+      if (m.loanedCount > 0) {
+        // The faction owns copies, but every one is loaned out — none free to
+        // hand over. Call it out (and still link the market, since retrieving a
+        // copy back may not be possible if the holders still need them).
+        const loanedNote = m.loanedCount === 1
+          ? "the only copy in armory is loaned out"
+          : `all ${m.loanedCount} in armory are loaned out`;
+        return `<li><a href="${url}" target="_blank">${m.name}</a> — ${count} ${noun} it · ${loanedNote}</li>`;
+      }
       return `<li><a href="${url}" target="_blank">${m.name}</a> — ${count} ${noun} it</li>`;
     }).join("");
 
@@ -516,9 +525,9 @@
   // Coordinator: classifies each armory row and routes it to the appropriate
   // processor. Updates the missing items panel and logs aggregate stats.
   function scanArmoryRows(activeNeeds, itemNeedsMap) {
-    const rows          = document.querySelectorAll(ARMORY_ROW_SEL);
-    const inArmoryItems = new Set();
-    const stats         = { checked: 0, highlighted: 0, loanSuggested: 0 };
+    const rows         = document.querySelectorAll(ARMORY_ROW_SEL);
+    const loanedCounts = new Map(); // itemId -> # of copies currently loaned out
+    const stats        = { checked: 0, highlighted: 0, loanSuggested: 0 };
 
     for (const row of rows) {
       if (row.dataset.ocLoanSubmitted) {
@@ -529,11 +538,13 @@
       const itemId = getRowItemId(row);
       if (itemId === null) continue;
 
-      inArmoryItems.add(itemId);
-      _seenArmoryItems.add(itemId);
-
       const userId = getRowLoanedUserId(row);
       if (userId === null) {
+        // Only AVAILABLE (unloaned) copies count as "seen". An item whose every
+        // copy is loaned out can't be handed to whoever needs it, so it must
+        // still surface as a need — not be treated as on-hand.
+        _seenArmoryItems.add(itemId);
+
         // Prefer Loan (retrievable). Fall back to Give for items that can't be
         // loaned — e.g. drugs like PCP. Give permanently transfers the item to
         // the member's inventory; there's no retrieve.
@@ -545,6 +556,7 @@
           if (giveBtn) processHandoutRow(row, itemId, itemNeedsMap, giveBtn, stats, "give");
         }
       } else {
+        loanedCounts.set(itemId, (loanedCounts.get(itemId) || 0) + 1);
         processLoanedRow(row, itemId, userId, activeNeeds, stats);
       }
     }
@@ -552,7 +564,7 @@
     if (itemNeedsMap) {
       const missingItems = [...itemNeedsMap.entries()]
         .filter(([id]) => !_seenArmoryItems.has(id))
-        .map(([id, needers]) => ({ id, name: OC_ITEMS.get(id) || `Item ${id}`, needers }))
+        .map(([id, needers]) => ({ id, name: OC_ITEMS.get(id) || `Item ${id}`, needers, loanedCount: loanedCounts.get(id) || 0 }))
         .sort((a, b) => a.name.localeCompare(b.name));
       renderMissingItemsPanel(missingItems);
     }
