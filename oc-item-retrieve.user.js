@@ -505,7 +505,7 @@
         const href  = `#/tab=armoury&start=0&sub=${offSub}`;
         return `<li>${m.name} — ${count} ${noun} it → <a href="${href}" class="oc-tab-cue">check the ${label} tab</a></li>`;
       }
-      const url = `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encodeURIComponent(m.name)}`;
+      const url = `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${m.id}`;
       if (m.loanedCount > 0) {
         // The faction owns copies, but every one is loaned out — none free to
         // hand over. Call it out (and still link the market, since retrieving a
