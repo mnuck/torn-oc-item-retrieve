@@ -3,7 +3,7 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.7.2
+// @version      1.7.3
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -181,11 +181,28 @@
     map.get(key).add(value);
   }
 
+  // Crime statuses that mean the crime is FINISHED — its slot assignments are
+  // historical, not active needs. The Completed sub-tab reuses the same
+  // .wrapper___tgDjk component as Planning, so without this filter a visit to
+  // Completed (and scrolling it to lazy-load more) would scrape finished crimes
+  // and overwrite the planning cache with stale members/items. On the armory
+  // that makes every loaned item glow as "safe to retrieve". (Bug: v1.7.3.)
+  const DONE_CRIME_STATUS = /success|fail|expired|complete/i;
+
+  function isActiveCrime(crime) {
+    const status = crime?.status;
+    return !(typeof status === "string" && DONE_CRIME_STATUS.test(status));
+  }
+
   // Reads planning crime data directly from React fiber props.
-  // Captures any crime wrapper that has slots with both a player and an item requirement,
-  // regardless of planning state class — some fully-filled crimes lack the planning___c_GFN
-  // class until they begin executing.
-  // Returns { activeNeeds, itemNeedsMap, itemNames } or null if no relevant crimes found.
+  // Captures any ACTIVE crime wrapper that has slots with both a player and an
+  // item requirement, regardless of planning state class — some fully-filled
+  // crimes lack the planning___c_GFN class until they begin executing. Finished
+  // crimes (see isActiveCrime) are skipped so the Completed sub-tab can't clobber
+  // the cache.
+  // Returns { activeNeeds, itemNeedsMap, itemNames } or null if no ACTIVE crimes
+  // with assigned slots were found — callers must treat null as "no update" and
+  // never overwrite existing cache with it.
   function scrapePlanningCrimes() {
     const planningEls = [...document.querySelectorAll(".wrapper___tgDjk")];
     if (planningEls.length === 0) return null;
@@ -199,6 +216,7 @@
       if (!fiberKey) continue;
       const crime = el[fiberKey]?.return?.memoizedProps?.crime;
       if (!crime?.playerSlots) continue;
+      if (!isActiveCrime(crime)) continue;
 
       for (const slot of crime.playerSlots) {
         const userId    = slot.player?.ID    != null ? Number(slot.player.ID)           : null;
@@ -225,6 +243,14 @@
         }
       }
     }
+
+    // Never return a degenerate scrape. An empty activeNeeds means we found no
+    // active planning slots — e.g. we're on the Completed sub-tab, or the crimes
+    // list hasn't rendered yet. Returning null keeps callers from overwriting a
+    // good planning cache with empty data, which would flag every loaned armory
+    // item as retrievable. This backstops isActiveCrime: even if a finished
+    // crime slips the status filter, an all-filtered view still can't clobber.
+    if (activeNeeds.size === 0) return null;
 
     return { activeNeeds, itemNeedsMap, itemNames };
   }
