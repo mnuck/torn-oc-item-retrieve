@@ -3,7 +3,7 @@
 // @namespace    https://github.com/mnuck/torn-oc-item-retrieve
 // @updateURL    https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
 // @downloadURL  https://github.com/mnuck/torn-oc-item-retrieve/raw/refs/heads/main/oc-item-retrieve.user.js
-// @version      1.7.3
+// @version      1.7.4
 // @description  Highlights Retrieve links for OC items safe to retrieve from the faction armory, and Loan buttons for items needed by faction members
 // @author       mnuck
 // @license      MIT; https://opensource.org/licenses/MIT
@@ -183,7 +183,7 @@
 
   // Crime statuses that mean the crime is FINISHED — its slot assignments are
   // historical, not active needs. The Completed sub-tab reuses the same
-  // .wrapper___tgDjk component as Planning, so without this filter a visit to
+  // crime-card wrapper component as Planning, so without this filter a visit to
   // Completed (and scrolling it to lazy-load more) would scrape finished crimes
   // and overwrite the planning cache with stale members/items. On the armory
   // that makes every loaned item glow as "safe to retrieve". (Bug: v1.7.3.)
@@ -197,14 +197,17 @@
   // Reads planning crime data directly from React fiber props.
   // Captures any ACTIVE crime wrapper that has slots with both a player and an
   // item requirement, regardless of planning state class — some fully-filled
-  // crimes lack the planning___c_GFN class until they begin executing. Finished
+  // crimes lack the planning class until they begin executing. Finished
   // crimes (see isActiveCrime) are skipped so the Completed sub-tab can't clobber
   // the cache.
   // Returns { activeNeeds, itemNeedsMap, itemNames } or null if no ACTIVE crimes
   // with assigned slots were found — callers must treat null as "no update" and
   // never overwrite existing cache with it.
   function scrapePlanningCrimes() {
-    const planningEls = [...document.querySelectorAll(".wrapper___tgDjk")];
+    // Torn's CSS-module class names end in a build hash that changes without notice
+    // (wrapper___tgDjk became wrapper___Bd3B7), so match the stable "wrapper___" prefix.
+    // Other components share the prefix; the fiber check below skips any without crime data.
+    const planningEls = [...document.querySelectorAll('[class^="wrapper___"], [class*=" wrapper___"]')];
     if (planningEls.length === 0) return null;
 
     const activeNeeds  = new Map(); // userId -> Set<itemId>  (all assigned slots)

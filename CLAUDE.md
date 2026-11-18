@@ -30,6 +30,8 @@ The armory page DOM structure is not documented and may change. The script tries
 - **Item rows**: multiple selector patterns for robustness
 - **Retrieve link**: text content match on anchor elements
 
+Torn's CSS-module class names end in a build hash that changes without notice (e.g. `wrapper___tgDjk` became `wrapper___Bd3B7`). Never hard-code the hash; match the stable prefix, e.g. `[class^="wrapper___"], [class*=" wrapper___"]`. The crime data itself is read from React fiber props (`el.__reactFiber*.return.memoizedProps.crime`), which has been stable.
+
 If Torn changes their DOM structure, these selectors will break. Check `extractItemIdFromRow()`, `isItemLoanedOut()`, and `scanArmoryRows()` for the selector logic.
 
 ## API
